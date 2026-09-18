@@ -1,0 +1,45 @@
+{
+    "input_shape": [
+        10856,
+        12
+    ],
+    "feature_shape": [
+        10856,
+        11
+    ],
+    "train_shape": [
+        8684,
+        11
+    ],
+    "test_shape": [
+        2172,
+        11
+    ],
+    "transformed_train_shape": [
+        8684,
+        14
+    ],
+    "transformed_test_shape": [
+        2172,
+        14
+    ],
+    "target_column": "fuel_consumption_rate",
+    "numerical_features": [
+        "sailing_speed",
+        "displacement",
+        "trim",
+        "wind_speed",
+        "wind_direction_relative",
+        "combined_wave_height",
+        "combined_wave_period",
+        "sea_current_speed",
+        "sea_current_direction_relative",
+        "sea_water_temperature"
+    ],
+    "categorical_features": [
+        "vessel_type"
+    ],
+    "transformed_feature_count": 14,
+    "test_size": 0.2,
+    "random_state": 42
+}

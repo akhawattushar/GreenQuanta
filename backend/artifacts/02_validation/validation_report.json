@@ -1,0 +1,16 @@
+{
+    "validation_status": true,
+    "ingested_data_path": "/Users/subrat/Desktop/SIH/artifacts/01_ingestion/ingested_data.csv",
+    "validation_report_path": "/Users/subrat/Desktop/SIH/artifacts/02_validation/validation_report.json",
+    "row_count": 10856,
+    "column_count": 26,
+    "missing_value_count": 10000,
+    "duplicate_row_count": 0,
+    "missing_columns": [],
+    "unexpected_columns": [],
+    "invalid_numeric_columns": [],
+    "errors": [],
+    "warnings": [
+        "Missing values detected: 10000 (3.54%)"
+    ]
+}

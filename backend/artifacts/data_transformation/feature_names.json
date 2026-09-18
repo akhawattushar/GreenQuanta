@@ -1,0 +1,16 @@
+[
+    "sailing_speed",
+    "displacement",
+    "trim",
+    "wind_speed",
+    "wind_direction_relative",
+    "combined_wave_height",
+    "combined_wave_period",
+    "sea_current_speed",
+    "sea_current_direction_relative",
+    "sea_water_temperature",
+    "vessel_type_Fishing Trawler",
+    "vessel_type_Oil Service Boat",
+    "vessel_type_Surfer Boat",
+    "vessel_type_Tanker Ship"
+]

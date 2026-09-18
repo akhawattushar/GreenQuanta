@@ -1,0 +1,262 @@
+# QuantaFleet Backend (FastAPI)
+
+Backend for **GreenQuanta / QuantaFleet**.
+
+Fuel predictions come from the trained artifacts in `artifacts/`. Optimisation,
+scenario analysis and voyage fuel figures all route through the same model. If
+the artifacts cannot be loaded, the affected endpoints return **503 with the
+reason** — no placeholder number is ever substituted for model output.
+
+---
+
+## Quick start
+
+```bash
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env            # then edit SECRET_KEY
+
+python scripts/verify_artifacts.py     # confirms the model loads and predicts
+uvicorn app.main:app --reload --port 8000
+```
+
+Or just `./run.sh`, which does all of the above.
+
+- Swagger UI: <http://localhost:8000/docs>
+- ReDoc: <http://localhost:8000/redoc>
+- Health: <http://localhost:8000/api/v1/health>
+
+The first account registered on an empty database is promoted to
+**administrator** so the admin panel is reachable. After that, the admin role
+can only be granted by an existing administrator (or to an address listed in
+`ADMIN_EMAILS`).
+
+---
+
+## What the artifacts actually contain
+
+Read from the artifacts themselves, not assumed:
+
+| Item | Value |
+|---|---|
+| Model | `artifacts/model_trainer/best_model.pkl` → `sklearn.linear_model.LinearRegression` |
+| Preprocessor | `artifacts/data_transformation/preprocessor.pkl` → `ColumnTransformer` |
+| Numerical pipeline | `SimpleImputer(median)` → `StandardScaler` |
+| Categorical pipeline | `SimpleImputer(most_frequent)` → `OneHotEncoder(handle_unknown="ignore")` |
+| Target | `fuel_consumption_rate` |
+| Transformed width | 14 (matches `model.n_features_in_`) |
+
+**Raw feature order** (taken from `preprocessor.transformers_`, enforced on every
+request):
+
+```
+sailing_speed, displacement, trim, wind_speed, wind_direction_relative,
+combined_wave_height, combined_wave_period, sea_current_speed,
+sea_current_direction_relative, sea_water_temperature, vessel_type
+```
+
+**`vessel_type` vocabulary** (read from the fitted `OneHotEncoder`, the only
+values accepted):
+
+```
+Fishing Trawler · Oil Service Boat · Surfer Boat · Tanker Ship
+```
+
+### Four things to be aware of
+
+1. **The model is near-degenerate.** Recomputed on the shipped held-out split
+   (2172 rows): MAE ≈ 2.4e-06, RMSE ≈ 5.1e-06, **R² = 1.0**. The coefficients are
+   ≈4.65 for all ten numeric features and ≈1e-8 for every `vessel_type` dummy.
+   The target is an almost exact linear function of the inputs in this dataset.
+   Treat that as a pipeline check, not as evidence of real-world predictive
+   skill. `/prediction/model` and `/admin/model` recompute and return these
+   numbers rather than copying them from a report.
+
+2. **The target unit is undocumented.** Nothing in the artifacts records whether
+   `fuel_consumption_rate` is kg/h. It is set by `MODEL_TARGET_UNIT` and every
+   response carries `unit_verified: false` until you confirm it and set
+   `MODEL_TARGET_UNIT_VERIFIED=true`.
+
+3. **No confidence is reported.** The artifacts contain no interval estimator,
+   so none is invented.
+
+4. **scikit-learn version skew.** The artifacts were pickled with 1.9.1. Loading
+   under a different minor version emits `InconsistentVersionWarning`; loading
+   and inference still work, and the warnings are surfaced in `/health` and
+   `/admin/model` rather than swallowed. Pin `scikit-learn==1.9.1` to silence them.
+
+### Frontend schema mismatch (fixed)
+
+The original prototype form collected `vesselType (Container/Bulk/Tanker/Ro-Ro/
+Feeder)`, `fuelType`, `cargoLoadTonnes` and a `weather` dropdown. The model
+accepts none of those. The Prediction, Optimization and Scenario pages now
+collect the eleven real features, and the vessel-type dropdown is populated from
+`/prediction/model` so it can never drift from the encoder.
+
+---
+
+## What is model output and what is not
+
+| Quantity | Source |
+|---|---|
+| `fuel_rate` | **Trained model.** |
+| `fuel_tonnes` | Model rate × duration, adjusted by the fuel's LHV ratio. |
+| `cost_usd` / `cost_inr` | Fuel tonnes × configured price. **Assumption.** |
+| `ghg_tonnes_co2e` | Fuel tonnes × IMO carbon factor. **Assumption.** |
+| Shore-power saving | Configured port-stay allowance. **Assumption.** |
+| Voyage progress | Simulated from departure time. **Not telemetry.** |
+
+Every optimisation and scenario response embeds an `assumptions` block listing
+the exact constants applied, so a reviewer can check them without reading code.
+They live in `app/services/evaluator.py` and `.env`.
+
+---
+
+## Optimisation
+
+Both solvers are fully implemented in `app/services/optimization.py`:
+
+- **NSGA-II** — fast non-dominated sort, crowding distance, binary tournament,
+  SBX crossover, polynomial mutation.
+- **QIEA** (quantum-inspired) — a population of qubit probability registers
+  collapsed each generation and updated with a rotation gate toward the
+  incumbent best.
+
+Decision variables: sailing speed (continuous), fuel type (categorical), shore
+power (binary). Objectives: minimise cost and GHG, subject to an ETA limit and
+optional cost/emission caps.
+
+**QIEA runs on a CPU. No quantum hardware is involved and no quantum advantage
+is claimed.** The comparison table reports measured wall-clock runtime, model
+evaluation counts and objective values for this problem on this machine, and
+nothing more. A **baseline plan** (top of the speed band, first listed fuel, no
+shore power) is always included so any improvement is measured rather than
+asserted.
+
+Speed search is clamped to 12–19 knots, the range present in the training data;
+searching outside it would be extrapolation.
+
+---
+
+## API surface
+
+All routes are under `/api/v1`. Everything except `/health`, `/`, `/auth/login`
+and `/auth/register` requires a bearer token.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/health` | Public. DB, model and PDF-export status. |
+| POST | `/auth/register` · `/auth/login` | Returns a JWT. |
+| GET | `/auth/me` | Current user; used by the frontend to validate a stored token. |
+| GET | `/prediction/model` | Metadata + recomputed holdout metrics. |
+| POST | `/prediction/fuel` | Real inference. 503 if the model is unavailable. |
+| GET | `/prediction/history` | |
+| GET | `/optimization/algorithms` | Solver status and assumptions. |
+| POST | `/optimization/run` | |
+| GET | `/optimization/runs` · `/runs/latest` · `/runs/{id}` | |
+| GET | `/scenario/catalog` | |
+| POST | `/scenario/run` | |
+| GET | `/voyage/active` · `/voyage/summary` · `/voyage/{id}` | Simulated, labelled. |
+| GET | `/report/csv` · `/report/pdf` · `/report/history` | |
+| GET/PATCH | `/admin/users`, `/admin/users/{id}/role` | Admin only. |
+| GET/POST | `/admin/model`, `/admin/model/reload`, `/admin/logs`, `/admin/system` | Admin only. |
+
+**Roles.** `admin` reaches everything. `operator`, `admin` and `researcher` can
+run compute-heavy endpoints. `regulator` is read-only — it can view results,
+voyages and reports but cannot trigger runs.
+
+---
+
+## Layout
+
+```
+backend/
+  app/
+    main.py                  application factory, CORS, lifespan, exception handlers
+    core/config.py           env-driven settings (+ tiny .env loader)
+    core/security.py         PBKDF2 password hashing, HS256 JWT
+    db/database.py           MongoDB repositories (the only driver-aware module)
+    schemas/models.py        Pydantic v2 request/response models
+    services/
+      model_registry.py      artifact loading, validation, inference, metrics
+      evaluator.py           the common evaluator (fuel → cost → GHG → feasibility)
+      optimization.py        NSGA-II and QIEA
+      scenario.py            scenario modifiers
+      voyage.py              user-recorded voyage monitoring
+      reporting.py           CSV (stdlib) and PDF (ReportLab)
+    api/deps.py              DB handle, JWT auth, role guards
+    api/routes/              one router per domain
+  artifacts/                 the real trained artifacts
+  tests/                     pytest suite
+  scripts/verify_artifacts.py
+  scripts/run_tests.py       fallback runner for machines without pytest
+```
+
+### Database
+
+`app/db/database.py` is the only module that touches a driver. It persists
+users, prediction/optimization/scenario history and voyages in MongoDB
+(Atlas or self-hosted) via `pymongo`. To move to another store, re-implement
+`Database`, `UserRepository`, `RunRepository`, `VoyageRepository` and
+`AuditRepository` with the same method signatures. Nothing else changes.
+
+### A note on the auth implementation
+
+Password hashing (PBKDF2-HMAC-SHA256) and JWT signing (HS256) are implemented on
+the standard library in `app/core/security.py`, so the whole auth path is
+unit-testable without native crypto wheels. The tokens are standard compact JWS
+and decode unchanged with `PyJWT` or `python-jose` if you prefer to swap the
+module out.
+
+---
+
+## Testing
+
+```bash
+pytest -q                          # full suite
+python scripts/run_tests.py        # fallback, no pytest required
+python scripts/verify_artifacts.py # artifact + prediction + metrics check
+```
+
+The suite covers artifact loading and feature-order enforcement, rejection of
+unknown categories / non-numeric / missing features, the missing-model error
+path, recomputed holdout metrics, evaluator arithmetic and constraints, both
+solvers (including determinism under a fixed seed and improvement over the
+baseline), scenarios, voyages, repositories, JWT signing/expiry/tampering,
+report rendering, and the HTTP layer (auth, 401 on every protected route, 403
+for role violations, validation errors, exports).
+
+See "Verification status" below for what was and was not run.
+
+---
+
+## Environment variables
+
+See `.env.example`. The ones that matter most:
+
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | JWT signing key. **Change it.** |
+| `MONGODB_URI` | MongoDB Atlas (or local) connection string. |
+| `MONGODB_DB` | Database name, `quantafleet` by default. |
+| `ARTIFACTS_DIR` | Where the `.pkl` files live. |
+| `MODEL_TARGET_UNIT` / `_VERIFIED` | Unit reporting for the prediction target. |
+| `FUEL_PRICE_USD_PER_TONNE`, `USD_TO_INR` | Cost assumptions. |
+| `CORS_ORIGINS` | Must include the Vite dev origin. |
+| `ADMIN_EMAILS` | Addresses allowed to self-register as admin. |
+
+---
+
+## Verification status
+
+**Run and passing (46 tests):** artifact loading, feature order, encoder
+vocabulary, real predictions, input rejection, missing-artifact errors, holdout
+metrics, evaluator, NSGA-II, QIEA, scenarios, voyages, repositories, JWT,
+CSV/PDF rendering.
+
+**Not run:** the 28 HTTP tests in `tests/test_api.py`. The machine this was built
+on had no network access, so `fastapi`, `uvicorn`, `pydantic`, `pytest` and
+`httpx` could not be installed and the server was never started. The route layer
+compiles (`python -m compileall app`) but has not been exercised over HTTP.
+**Run `pytest -q` after `pip install -r requirements.txt` before relying on it.**
