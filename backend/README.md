@@ -150,7 +150,7 @@ and `/auth/register` requires a bearer token.
 | POST | `/auth/register` · `/auth/login` | Returns a JWT. |
 | GET | `/auth/me` | Current user; used by the frontend to validate a stored token. |
 | GET | `/prediction/model` | Metadata + recomputed holdout metrics. |
-| POST | `/prediction/fuel` | Real inference. 503 if the model is unavailable. |
+| POST | `/prediction/fuel` | Real inference. Optional `model_id` defaults to `legacy`; 503 if the requested model is unavailable. |
 | GET | `/prediction/history` | |
 | GET | `/optimization/algorithms` | Solver status and assumptions. |
 | POST | `/optimization/run` | |
@@ -165,6 +165,18 @@ and `/auth/register` requires a bearer token.
 **Roles.** `admin` reaches everything. `operator`, `admin` and `researcher` can
 run compute-heavy endpoints. `regulator` is read-only — it can view results,
 voyages and reports but cannot trigger runs.
+
+The FuelCast XGBoost bundle is registered as `fuelcast_xgboost` for direct
+service-level inference with `speed_over_ground` (m/s), `wind_speed` (m/s),
+`wind_direction` (degrees), `wave_height` (m), `wave_period` (s), and
+`current_speed` (m/s). Its output is `kg/s`. The export does not establish
+the wind-direction reference convention.
+`/prediction/model` reports its separate load and API readiness. The current
+`/prediction/fuel` request cannot supply verified FuelCast `speed_over_ground`
+and `wind_direction` semantics, so selecting `fuelcast_xgboost` returns 503
+with the missing fields. The legacy predictor remains the default. FuelCast
+rates are not used for voyage fuel, optimization, costs, or emissions. Those
+downstream paths remain blocked until the live API input mappings are verified.
 
 ---
 

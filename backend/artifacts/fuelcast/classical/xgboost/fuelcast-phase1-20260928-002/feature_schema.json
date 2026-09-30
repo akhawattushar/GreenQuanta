@@ -1,0 +1,51 @@
+{
+  "dataset_id": "krohnedigital/FuelCast",
+  "dataset_version": "eb6a6ec011c1c9a2cbce21459e22be4c77ef84dd",
+  "raw_features": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "classical_features": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction_sin",
+    "wind_direction_cos",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "vqr_features": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "target": "fuel_consumption_kg_s",
+  "units": {
+    "speed_over_ground": "m/s",
+    "wind_speed": "m/s",
+    "wind_direction": "degrees",
+    "wave_height": "m",
+    "wave_period": "s",
+    "current_speed": "m/s",
+    "fuel_consumption_kg_s": "kg/s"
+  },
+  "array_keys": [
+    "features",
+    "vqr_features",
+    "target",
+    "vqr_target",
+    "record_id",
+    "vessel_id",
+    "time_index"
+  ],
+  "classical_preprocessing": "training median of five continuous features; circular-mean wind imputation; wind sine/cosine; standard scaling",
+  "vqr_preprocessing": "training median of five continuous features; circular-mean wind imputation; non-direction MinMax [0, pi] clipped; direction degrees to radians",
+  "vqr_target_scaling": "training MinMax [-1, 1]; inverse_transform returns kg/s"
+}

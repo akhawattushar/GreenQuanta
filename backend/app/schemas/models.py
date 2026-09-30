@@ -68,6 +68,7 @@ class VesselIn(BaseModel):
 class PredictionRequest(BaseModel):
     """Raw features for a single inference call."""
 
+    model_id: str = Field(default="legacy", description="Predictor ID. The legacy model is the default.")
     sailing_speed: float = Field(gt=0, le=60, description="knots")
     vessel: VesselIn
     environment: EnvironmentIn
@@ -75,6 +76,7 @@ class PredictionRequest(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    model_id: str = "legacy"
     fuel_rate: float
     fuel_rate_unit: str
     unit_verified: bool
@@ -91,6 +93,7 @@ class ModelInfoResponse(BaseModel):
     error: str | None = None
     metadata: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
+    models: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------

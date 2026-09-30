@@ -12,7 +12,9 @@ from app.services.evaluator import Environment, VesselState, VoyagePlan, feature
 from app.services.model_registry import (
     FeatureValidationError,
     ModelUnavailableError,
+    UnknownModelError,
     evaluate_holdout,
+    fuelcast_status,
     get_bundle,
     status as model_status,
 )
@@ -23,19 +25,33 @@ router = APIRouter(prefix="/prediction", tags=["prediction"])
 @router.get("/model", response_model=ModelInfoResponse, summary="Loaded model metadata and measured metrics")
 def model_info(_: CurrentUser) -> ModelInfoResponse:
     info = model_status()
+    models = {"legacy": info, "fuelcast_xgboost": fuelcast_status()}
     if not info["loaded"]:
-        return ModelInfoResponse(loaded=False, error=info["error"])
+        return ModelInfoResponse(loaded=False, error=info["error"], models=models)
     metadata = {k: v for k, v in info.items() if k not in {"loaded", "error"}}
     try:
         metrics = evaluate_holdout()
     except ModelUnavailableError as exc:
         metrics = {"available": False, "reason": str(exc)}
-    return ModelInfoResponse(loaded=True, metadata=metadata, metrics=metrics)
+    return ModelInfoResponse(loaded=True, metadata=metadata, metrics=metrics, models=models)
 
 
 @router.post("/fuel", response_model=PredictionResponse, summary="Predict fuel consumption rate")
 def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> PredictionResponse:
     settings = get_settings()
+
+    if payload.model_id not in {"legacy", "fuelcast_xgboost"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(UnknownModelError(f"Unknown model ID {payload.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")))
+    if payload.model_id == "fuelcast_xgboost":
+        missing = fuelcast_status()["missing_api_inputs"]
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=("FuelCast XGBoost is unavailable to this prediction request: it needs "
+                    + ", ".join(missing)
+                    + ". The existing sailing_speed is knots and wind_direction_relative "
+                    "is relative to heading; neither has verified FuelCast semantics."),
+        )
 
     try:
         bundle = get_bundle()
@@ -68,6 +84,7 @@ def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> Pred
         voyage_fuel = round(rate * duration / 1000.0, 4)
 
     response = PredictionResponse(
+        model_id="legacy",
         fuel_rate=round(rate, 4),
         fuel_rate_unit=settings.target_unit,
         unit_verified=settings.target_unit_verified,

@@ -28,6 +28,10 @@ class FeatureValidationError(ValueError):
     """Raised when inference input does not match the training schema."""
 
 
+class UnknownModelError(ValueError):
+    """Raised for a model ID that the registry does not recognize."""
+
+
 @dataclass
 class ModelBundle:
     """Everything needed to turn raw feature dicts into predictions."""
@@ -68,6 +72,9 @@ class ModelBundle:
 _bundle: ModelBundle | None = None
 _load_error: str | None = None
 _lock = threading.Lock()
+_fuelcast_bundle: Any | None = None
+_fuelcast_error: str | None = None
+_fuelcast_lock = threading.Lock()
 
 
 def _require(path: Path, label: str) -> None:
@@ -227,6 +234,46 @@ def get_bundle(*, force_reload: bool = False) -> ModelBundle:
             _load_error = str(exc)
             raise
         return _bundle
+
+
+def get_predictor(model_id: str = "legacy", *, force_reload: bool = False):
+    """Select an independent predictor without changing the legacy default."""
+    if model_id == "legacy":
+        return get_bundle(force_reload=force_reload)
+    if model_id != "fuelcast_xgboost":
+        raise UnknownModelError(f"Unknown model ID {model_id!r}. Available IDs: legacy, fuelcast_xgboost.")
+    from app.services.fuelcast_xgboost import load_fuelcast_xgboost
+
+    global _fuelcast_bundle, _fuelcast_error
+    with _fuelcast_lock:
+        if force_reload:
+            _fuelcast_bundle, _fuelcast_error = None, None
+        if _fuelcast_bundle is not None:
+            return _fuelcast_bundle
+        if _fuelcast_error is not None:
+            raise ModelUnavailableError(_fuelcast_error)
+        try:
+            _fuelcast_bundle = load_fuelcast_xgboost(get_settings())
+        except ModelUnavailableError as exc:
+            _fuelcast_error = str(exc)
+            raise
+        return _fuelcast_bundle
+
+
+def fuelcast_status() -> dict:
+    """Report model readiness and the separate live-API input contract gate."""
+    missing_api_inputs = [
+        "speed_over_ground (m/s)", "wind_direction (FuelCast degrees)",
+        "wave_height (m)", "wave_period (s)", "current_speed (m/s)",
+    ]
+    try:
+        predictor = get_predictor("fuelcast_xgboost")
+    except ModelUnavailableError as exc:
+        return {"model_id": "fuelcast_xgboost", "run_id": "fuelcast-phase1-20260928-002",
+                "loaded": False, "error": str(exc), "api_available": False,
+                "missing_api_inputs": missing_api_inputs, "target_unit": "kg/s"}
+    return {"loaded": True, "error": None, "api_available": False,
+            "missing_api_inputs": missing_api_inputs, **predictor.metadata()}
 
 
 def status() -> dict:
