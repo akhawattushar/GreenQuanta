@@ -208,6 +208,10 @@ class ScenarioResponse(BaseModel):
 # voyages / admin / reports
 # --------------------------------------------------------------------------
 class VoyageCreateRequest(BaseModel):
+    model_id: str = Field(default="legacy", description="Fuel model ID; legacy is the default.")
+    fuelcast_inputs: FuelCastInputs | None = Field(
+        default=None, description="Six explicit FuelCast inputs for fuelcast_xgboost only."
+    )
     vessel: str = Field(min_length=1, max_length=80)
     vessel_type: str = Field(min_length=1, max_length=60)
     origin: str = Field(min_length=1, max_length=80)
@@ -216,6 +220,18 @@ class VoyageCreateRequest(BaseModel):
     speed_knots: float = Field(gt=0, le=60)
     fuel_loaded_tonnes: float = Field(gt=0, le=100000)
     departed_at: str | None = Field(default=None, description="ISO timestamp; defaults to now.")
+
+    @model_validator(mode="after")
+    def _model_inputs(self):
+        if self.model_id == "legacy":
+            if self.fuelcast_inputs is not None:
+                raise ValueError("fuelcast_inputs cannot be used with the legacy model.")
+        elif self.model_id == "fuelcast_xgboost":
+            if self.fuelcast_inputs is None:
+                raise ValueError("fuelcast_xgboost requires fuelcast_inputs with all six raw fields.")
+        else:
+            raise ValueError(f"Unknown model ID {self.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")
+        return self
 
     @field_validator("destination")
     @classmethod

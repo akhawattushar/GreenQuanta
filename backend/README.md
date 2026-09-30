@@ -172,7 +172,8 @@ service-level inference with `speed_over_ground` (m/s), `wind_speed` (m/s),
 `current_speed` (m/s). Its output is `kg/s`. The export does not establish
 the wind-direction reference convention. The caller must supply the direction
 value expected by the exported FuelCast preprocessor; whether it is absolute
-or relative, and from or toward, still needs confirmation before voyage use.
+or relative, and from or toward, still needs confirmation before automatic
+mapping from voyage weather fields.
 Send all six inputs explicitly to the existing `POST /api/v1/prediction/fuel`:
 
 ```json
@@ -193,9 +194,42 @@ The response identifies `fuelcast_xgboost` and labels `fuel_rate` in `kg/s`;
 `voyage_fuel_tonnes` and `duration_hours` are null. Omit `model_id` for the
 existing legacy request flow. Mixing `fuelcast_inputs` with legacy inputs
 returns 422. `/prediction/model` reports each predictor's load and API status.
-FuelCast rates are not used for voyage fuel, optimization, costs, or emissions.
-Voyage and optimization integration remains blocked until live input mappings
-are verified.
+Voyage records can also select `fuelcast_xgboost` explicitly. The legacy model
+remains the default. For example, send this to `POST /api/v1/voyage`:
+
+```json
+{
+  "vessel": "MV Test",
+  "vessel_type": "Tanker Ship",
+  "origin": "Mumbai",
+  "destination": "Singapore",
+  "distance_nm": 120.0,
+  "speed_knots": 12.0,
+  "fuel_loaded_tonnes": 300.0,
+  "model_id": "fuelcast_xgboost",
+  "fuelcast_inputs": {
+    "speed_over_ground": 8.0,
+    "wind_speed": 5.5,
+    "wind_direction": 120.0,
+    "wave_height": 1.2,
+    "wave_period": 7.0,
+    "current_speed": 0.8
+  }
+}
+```
+
+FuelCast inputs are speed over ground, wind speed, and current speed in m/s;
+wind direction in degrees; wave height in metres; and wave period in seconds.
+The voyage speed in knots determines duration only; it is never converted to
+FuelCast speed over ground. For the selected model, planned fuel in tonnes is
+`rate_kg_s × duration_hours × 3.6`, with the conversion performed once before
+cost and emissions calculations. Cost and emissions use the existing Marine
+Diesel price and tank-to-wake factor. The result records the run ID, raw kg/s
+rate, duration, and normalized tonnes. One explicitly supplied environmental
+snapshot represents the entire voyage; progress estimates are not measured
+consumption. The export still does not confirm whether wind direction is
+absolute or relative, or whether it is from or toward. Optimization and VQR
+integration remain pending.
 
 ---
 
