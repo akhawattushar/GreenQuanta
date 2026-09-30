@@ -261,19 +261,21 @@ def get_predictor(model_id: str = "legacy", *, force_reload: bool = False):
 
 
 def fuelcast_status() -> dict:
-    """Report model readiness and the separate live-API input contract gate."""
-    missing_api_inputs = [
+    """Report model readiness for explicitly supplied FuelCast raw inputs."""
+    required_api_inputs = [
         "speed_over_ground (m/s)", "wind_direction (FuelCast degrees)",
-        "wave_height (m)", "wave_period (s)", "current_speed (m/s)",
+        "wind_speed (m/s)", "wave_height (m)", "wave_period (s)", "current_speed (m/s)",
     ]
     try:
         predictor = get_predictor("fuelcast_xgboost")
     except ModelUnavailableError as exc:
         return {"model_id": "fuelcast_xgboost", "run_id": "fuelcast-phase1-20260928-002",
                 "loaded": False, "error": str(exc), "api_available": False,
-                "missing_api_inputs": missing_api_inputs, "target_unit": "kg/s"}
-    return {"loaded": True, "error": None, "api_available": False,
-            "missing_api_inputs": missing_api_inputs, **predictor.metadata()}
+                "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
+                "wind_direction_convention_verified": False, "target_unit": "kg/s"}
+    return {"loaded": True, "error": None, "api_available": True,
+            "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
+            "wind_direction_convention_verified": False, **predictor.metadata()}
 
 
 def status() -> dict:

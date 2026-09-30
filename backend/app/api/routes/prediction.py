@@ -16,6 +16,7 @@ from app.services.model_registry import (
     evaluate_holdout,
     fuelcast_status,
     get_bundle,
+    get_predictor,
     status as model_status,
 )
 
@@ -44,14 +45,28 @@ def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> Pred
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=str(UnknownModelError(f"Unknown model ID {payload.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")))
     if payload.model_id == "fuelcast_xgboost":
-        missing = fuelcast_status()["missing_api_inputs"]
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=("FuelCast XGBoost is unavailable to this prediction request: it needs "
-                    + ", ".join(missing)
-                    + ". The existing sailing_speed is knots and wind_direction_relative "
-                    "is relative to heading; neither has verified FuelCast semantics."),
+        features = payload.fuelcast_inputs.model_dump()
+        try:
+            predictor = get_predictor("fuelcast_xgboost")
+            prediction = predictor.predict([features])
+        except FeatureValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except ModelUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        response = PredictionResponse(
+            model_id=prediction["model_id"],
+            fuel_rate=round(prediction["fuel_rates"][0], 4),
+            fuel_rate_unit=prediction["fuel_rate_unit"],
+            unit_verified=prediction["unit_verified"],
+            model_metadata=predictor.metadata(),
+            features_used=features,
+            note=("Prediction uses only explicit FuelCast inputs. Wind-direction reference convention "
+                  "still requires confirmation; no voyage fuel total or confidence interval is reported."),
         )
+        response.prediction_id = RunRepository(db, "prediction").save(
+            user_id=user["id"], request=payload.model_dump(), response=response.model_dump(),
+        )
+        return response
 
     try:
         bundle = get_bundle()

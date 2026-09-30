@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.api.routes.prediction import model_info, predict_fuel
 from app.core.config import Settings
@@ -64,19 +65,17 @@ def test_explicit_fuelcast_model_selection(monkeypatch):
     assert get_predictor() is get_bundle()
 
 
-def test_live_fuelcast_request_names_missing_inputs():
-    with pytest.raises(HTTPException) as exc:
-        predict_fuel(_request("fuelcast_xgboost"), {}, None)
-    assert exc.value.status_code == 503
-    for name in ("speed_over_ground", "wind_direction", "wave_height", "wave_period", "current_speed"):
-        assert name in exc.value.detail
+def test_fuelcast_request_does_not_reuse_legacy_fields():
+    with pytest.raises(ValidationError, match="requires fuelcast_inputs"):
+        _request("fuelcast_xgboost")
 
 
 def test_model_info_keeps_legacy_and_reports_fuelcast_gate():
     info = model_info({})
     assert info.loaded is True
     assert info.models["legacy"]["loaded"] is True
-    assert info.models["fuelcast_xgboost"]["api_available"] is False
+    assert info.models["fuelcast_xgboost"]["input_contract"] == "explicit_fuelcast_inputs"
+    assert info.models["fuelcast_xgboost"]["api_available"] == info.models["fuelcast_xgboost"]["loaded"]
     assert info.models["fuelcast_xgboost"]["target_unit"] == "kg/s"
 
 

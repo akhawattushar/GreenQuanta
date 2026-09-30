@@ -170,13 +170,32 @@ The FuelCast XGBoost bundle is registered as `fuelcast_xgboost` for direct
 service-level inference with `speed_over_ground` (m/s), `wind_speed` (m/s),
 `wind_direction` (degrees), `wave_height` (m), `wave_period` (s), and
 `current_speed` (m/s). Its output is `kg/s`. The export does not establish
-the wind-direction reference convention.
-`/prediction/model` reports its separate load and API readiness. The current
-`/prediction/fuel` request cannot supply verified FuelCast `speed_over_ground`
-and `wind_direction` semantics, so selecting `fuelcast_xgboost` returns 503
-with the missing fields. The legacy predictor remains the default. FuelCast
-rates are not used for voyage fuel, optimization, costs, or emissions. Those
-downstream paths remain blocked until the live API input mappings are verified.
+the wind-direction reference convention. The caller must supply the direction
+value expected by the exported FuelCast preprocessor; whether it is absolute
+or relative, and from or toward, still needs confirmation before voyage use.
+Send all six inputs explicitly to the existing `POST /api/v1/prediction/fuel`:
+
+```json
+{
+  "model_id": "fuelcast_xgboost",
+  "fuelcast_inputs": {
+    "speed_over_ground": 8.0,
+    "wind_speed": 5.5,
+    "wind_direction": 120.0,
+    "wave_height": 1.2,
+    "wave_period": 7.0,
+    "current_speed": 0.8
+  }
+}
+```
+
+The response identifies `fuelcast_xgboost` and labels `fuel_rate` in `kg/s`;
+`voyage_fuel_tonnes` and `duration_hours` are null. Omit `model_id` for the
+existing legacy request flow. Mixing `fuelcast_inputs` with legacy inputs
+returns 422. `/prediction/model` reports each predictor's load and API status.
+FuelCast rates are not used for voyage fuel, optimization, costs, or emissions.
+Voyage and optimization integration remains blocked until live input mappings
+are verified.
 
 ---
 

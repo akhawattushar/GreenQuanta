@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, FiniteFloat, field_validator, model_validator
 
 Role = Literal["operator", "admin", "regulator", "researcher"]
 FuelType = Literal["Marine Diesel", "LNG", "Methanol", "Ammonia", "Hydrogen"]
@@ -65,14 +66,61 @@ class VesselIn(BaseModel):
     trim: float = Field(ge=-10, le=10)
 
 
+class FuelCastInputs(BaseModel):
+    """Raw values supplied in the units expected by the FuelCast export."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    speed_over_ground: FiniteFloat = Field(ge=0, description="Ship speed over ground in m/s.")
+    wind_speed: FiniteFloat = Field(ge=0, description="Wind speed in m/s.")
+    wind_direction: FiniteFloat = Field(
+        ge=0, lt=360,
+        description=("Wind direction in degrees expected by the exported FuelCast preprocessor. "
+                     "Its absolute/relative and from/toward convention is not yet verified."),
+    )
+    wave_height: FiniteFloat = Field(ge=0, description="Wave height in metres.")
+    wave_period: FiniteFloat = Field(gt=0, description="Wave period in seconds.")
+    current_speed: FiniteFloat = Field(ge=0, description="Ocean current speed in m/s.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_nonfinite_for_http_errors(cls, values):
+        if not isinstance(values, dict):
+            return values
+        # FastAPI includes rejected input in its 422 JSON response. A raw
+        # NaN/Infinity token would make that response itself unserializable.
+        return {name: "non-finite number" if isinstance(value, float) and not math.isfinite(value)
+                else value for name, value in values.items()}
+
+
 class PredictionRequest(BaseModel):
-    """Raw features for a single inference call."""
+    """Legacy inputs by default, or explicit raw FuelCast inputs by model ID."""
 
     model_id: str = Field(default="legacy", description="Predictor ID. The legacy model is the default.")
-    sailing_speed: float = Field(gt=0, le=60, description="knots")
-    vessel: VesselIn
-    environment: EnvironmentIn
+    sailing_speed: float | None = Field(default=None, gt=0, le=60, description="Legacy sailing speed in knots.")
+    vessel: VesselIn | None = None
+    environment: EnvironmentIn | None = None
     distance_nm: float | None = Field(default=None, gt=0, le=25000)
+    fuelcast_inputs: FuelCastInputs | None = Field(
+        default=None, description="Required only for fuelcast_xgboost; values are used without legacy-field mapping."
+    )
+
+    @model_validator(mode="after")
+    def _inputs_for_selected_model(self):
+        if self.model_id == "legacy":
+            if self.fuelcast_inputs is not None:
+                raise ValueError("fuelcast_inputs cannot be used with the legacy model.")
+            missing = [name for name in ("sailing_speed", "vessel", "environment") if getattr(self, name) is None]
+            if missing:
+                raise ValueError(f"Legacy prediction requires: {', '.join(missing)}.")
+        elif self.model_id == "fuelcast_xgboost":
+            if self.fuelcast_inputs is None:
+                raise ValueError("fuelcast_xgboost requires fuelcast_inputs with all six raw FuelCast fields.")
+            legacy_fields = [name for name in ("sailing_speed", "vessel", "environment", "distance_nm")
+                             if getattr(self, name) is not None]
+            if legacy_fields:
+                raise ValueError(f"fuelcast_xgboost does not accept legacy fields: {', '.join(legacy_fields)}.")
+        return self
 
 
 class PredictionResponse(BaseModel):
