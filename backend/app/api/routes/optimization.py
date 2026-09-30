@@ -42,8 +42,8 @@ def algorithms(_: CurrentUser) -> dict:
         ],
         "speed_bounds": list(DEFAULT_SPEED_BOUNDS),
         "speed_bounds_note": (
-            "Clamped to the sailing-speed range present in the training data; searching outside it "
-            "would be extrapolation."
+            "Legacy sailing-speed bounds in knots, clamped to its training data. "
+            "FuelCast requires explicit speed-over-ground bounds in m/s."
         ),
         "assumptions": assumptions_block(),
     }
@@ -55,8 +55,12 @@ def run(payload: OptimizationRequest, user: WriteUser, db: DbDep) -> Optimizatio
     problem = OptimizationProblem(
         distance_nm=payload.distance_nm,
         vessel=VesselState(**payload.vessel.model_dump()),
-        environment=Environment(**payload.environment.model_dump()),
+        environment=(Environment(**payload.environment.model_dump()) if payload.environment is not None else None),
         available_fuels=list(payload.available_fuels),
+        model_id=payload.model_id,
+        fuelcast_inputs=(payload.fuelcast_inputs.model_dump() if payload.fuelcast_inputs is not None else None),
+        speed_bounds=(payload.fuelcast_speed_bounds_m_s if payload.model_id == "fuelcast_xgboost"
+                      else DEFAULT_SPEED_BOUNDS),
         allow_shore_power=payload.allow_shore_power,
         max_eta_hours=payload.max_eta_hours,
         max_ghg_tonnes=payload.max_ghg_tonnes,
@@ -70,7 +74,7 @@ def run(payload: OptimizationRequest, user: WriteUser, db: DbDep) -> Optimizatio
     except ModelUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Optimisation needs the trained model, which is unavailable. {exc}",
+            detail="The selected prediction model is unavailable or failed during optimization.",
         ) from exc
     except EvaluationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

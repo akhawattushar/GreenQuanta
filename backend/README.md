@@ -101,7 +101,7 @@ collect the eleven real features, and the vessel-type dropdown is populated from
 | Quantity | Source |
 |---|---|
 | `fuel_rate` | **Trained model.** |
-| `fuel_tonnes` | Model rate × duration, adjusted by the fuel's LHV ratio. |
+| `fuel_tonnes` | Legacy rate × duration with fuel assumptions; FuelCast kg/s × hours × 3.6 for Marine Diesel. |
 | `cost_usd` / `cost_inr` | Fuel tonnes × configured price. **Assumption.** |
 | `ghg_tonnes_co2e` | Fuel tonnes × IMO carbon factor. **Assumption.** |
 | Shore-power saving | Configured port-stay allowance. **Assumption.** |
@@ -125,14 +125,46 @@ Both solvers are fully implemented in `app/services/optimization.py`:
 
 Decision variables: sailing speed (continuous), fuel type (categorical), shore
 power (binary). Objectives: minimise cost and GHG, subject to an ETA limit and
-optional cost/emission caps.
+optional cost/emission caps. The legacy model is the default and keeps its
+existing speed search in knots. FuelCast currently searches only speed over
+ground in m/s; Marine Diesel and no shore power are required because the export
+has no verified fuel-type or shore-power adjustment.
+
+For FuelCast, supply explicit m/s speed bounds to `POST /api/v1/optimization/run`:
+
+```json
+{
+  "origin": "Mumbai", "destination": "Singapore", "distance_nm": 120,
+  "vessel": {"vessel_type": "Tanker Ship", "displacement": 12, "trim": 0},
+  "available_fuels": ["Marine Diesel"], "allow_shore_power": false,
+  "algorithm": "nsga2", "model_id": "fuelcast_xgboost",
+  "fuelcast_speed_bounds_m_s": [5, 10],
+  "fuelcast_inputs": {
+    "speed_over_ground": 8, "wind_speed": 5.5, "wind_direction": 120,
+    "wave_height": 1.2, "wave_period": 7, "current_speed": 0.8
+  }
+}
+```
+
+The six FuelCast values use m/s for all speeds, degrees for wind direction,
+metres for wave height, and seconds for wave period. The supplied
+`speed_over_ground` is the reference-plan speed and must lie within the bounds.
+Each optimizer candidate replaces it with its own m/s speed. Duration uses
+`candidate_speed_m_s / 0.514444` knots, once; each candidate's kg/s prediction
+becomes tonnes through `rate_kg_s × duration_hours × 3.6`, once. Cost and
+emissions use those tonnes. Results identify the optimizer algorithm separately
+from the prediction model, and record the selected speed, raw rate, duration,
+fuel tonnes, and the fixed environmental snapshot. The wind-direction
+absolute/relative and from/toward convention remains unverified. Holding one
+environmental snapshot fixed across candidates is a prototype assumption and
+does not establish physical validity. VQR integration remains pending.
 
 **QIEA runs on a CPU. No quantum hardware is involved and no quantum advantage
 is claimed.** The comparison table reports measured wall-clock runtime, model
 evaluation counts and objective values for this problem on this machine, and
-nothing more. A **baseline plan** (top of the speed band, first listed fuel, no
-shore power) is always included so any improvement is measured rather than
-asserted.
+nothing more. A **baseline plan** is included so any improvement is measured
+rather than asserted: the top of the speed band for legacy, or the supplied
+reference speed for FuelCast, on the first listed fuel without shore power.
 
 Speed search is clamped to 12–19 knots, the range present in the training data;
 searching outside it would be extrapolation.

@@ -148,11 +148,18 @@ class ModelInfoResponse(BaseModel):
 # optimisation
 # --------------------------------------------------------------------------
 class OptimizationRequest(BaseModel):
+    model_id: str = Field(default="legacy", description="Prediction model; legacy is the default.")
+    fuelcast_inputs: FuelCastInputs | None = Field(
+        default=None, description="FuelCast snapshot; speed_over_ground is the reference speed in m/s."
+    )
+    fuelcast_speed_bounds_m_s: tuple[FiniteFloat, FiniteFloat] | None = Field(
+        default=None, description="Required FuelCast candidate speed-over-ground bounds [minimum, maximum] in m/s."
+    )
     origin: str = Field(min_length=1, max_length=80)
     destination: str = Field(min_length=1, max_length=80)
     distance_nm: float = Field(gt=0, le=25000)
     vessel: VesselIn
-    environment: EnvironmentIn
+    environment: EnvironmentIn | None = None
     available_fuels: list[FuelType] = Field(min_length=1)
     allow_shore_power: bool = True
     max_eta_hours: float | None = Field(default=None, gt=0, le=5000)
@@ -162,6 +169,31 @@ class OptimizationRequest(BaseModel):
     population_size: int = Field(default=40, ge=8, le=200)
     generations: int = Field(default=60, ge=5, le=400)
     seed: int = 42
+
+    @model_validator(mode="after")
+    def _model_contract(self):
+        if self.model_id == "legacy":
+            if self.environment is None:
+                raise ValueError("Legacy optimization requires environment.")
+            if self.fuelcast_inputs is not None or self.fuelcast_speed_bounds_m_s is not None:
+                raise ValueError("FuelCast inputs and speed bounds cannot be used with the legacy model.")
+        elif self.model_id == "fuelcast_xgboost":
+            if self.fuelcast_inputs is None:
+                raise ValueError("fuelcast_xgboost requires fuelcast_inputs.")
+            if self.fuelcast_speed_bounds_m_s is None:
+                raise ValueError("fuelcast_xgboost requires fuelcast_speed_bounds_m_s.")
+            low, high = self.fuelcast_speed_bounds_m_s
+            if low <= 0 or high <= low:
+                raise ValueError("FuelCast speed bounds must be positive, finite, and increasing.")
+            if not low <= self.fuelcast_inputs.speed_over_ground <= high:
+                raise ValueError("FuelCast reference speed_over_ground must lie within the m/s speed bounds.")
+            if self.environment is not None:
+                raise ValueError("Legacy environment cannot be combined with FuelCast inputs.")
+            if self.available_fuels != ["Marine Diesel"] or self.allow_shore_power:
+                raise ValueError("FuelCast optimization currently requires Marine Diesel only and allow_shore_power=false.")
+        else:
+            raise ValueError(f"Unknown model ID {self.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")
+        return self
 
     @field_validator("destination")
     @classmethod
