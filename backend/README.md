@@ -238,13 +238,34 @@ and `/auth/register` requires a bearer token.
 | GET | `/scenario/catalog` | |
 | POST | `/scenario/run` | |
 | GET | `/voyage/active` · `/voyage/summary` · `/voyage/{id}` | Simulated, labelled. |
-| GET | `/report/csv` · `/report/pdf` · `/report/history` | |
+| GET | `/report/csv` · `/report/pdf` · `/report/history` | Read-only exports of stored prediction, voyage, optimization and scenario results. |
 | GET/PATCH | `/admin/users`, `/admin/users/{id}/role` | Admin only. |
 | GET/POST | `/admin/model`, `/admin/model/reload`, `/admin/logs`, `/admin/system` | Admin only. |
 
 **Roles.** `admin` reaches everything. `operator`, `admin` and `researcher` can
 run compute-heavy endpoints. `regulator` is read-only — it can view results,
 voyages and reports but cannot trigger runs.
+
+### Model-aware reports
+
+`/report/csv` and `/report/pdf` keep their existing `kind` and `run_id`
+parameters. `kind=voyage` also exports a stored voyage; optional `model_id`,
+`optimization_algorithm`, and `source_type` filters select stored rows.
+`/report/history` accepts the same filters. Prediction model identity
+(`legacy` or `fuelcast_xgboost`) is separate from the optimization algorithm
+(`nsga2` or quantum-inspired QIEA). QIEA is an optimizer, not a quantum
+prediction model. Reports never rerun a predictor or infer accuracy from
+operational results.
+
+Exports distinguish raw prediction rates (FuelCast in kg/s), stored normalized
+voyage fuel (tonnes), duration (hours), cost (USD or INR as labelled), and
+emissions (tonnes CO2e). They never convert a stored fuel total again or add
+rates with different units. Older records remain readable; an `unknown` model
+ID or a data-quality warning means the stored record cannot establish that
+provenance or unit. Older voyages did not persist modeled fuel results, so
+reports leave those values unavailable. A FuelCast report also notes that its
+single environmental snapshot is neither a time-series forecast nor measured
+voyage telemetry; its physical representativeness remains unverified.
 
 The FuelCast XGBoost bundle is registered as `fuelcast_xgboost` for direct
 service-level inference with `speed_over_ground` (m/s), `wind_speed` (m/s),
