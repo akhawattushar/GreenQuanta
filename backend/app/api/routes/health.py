@@ -28,6 +28,6 @@ def health() -> HealthResponse:
         environment=settings.app_env,
         database=db_ok,
         model_loaded=bool(model_status["loaded"]),
-        model_error=model_status.get("error"),
+        model_error=(model_registry.MODEL_HEALTH_FAILED_MESSAGE if not model_status["loaded"] else None),
         pdf_export=reporting.pdf_available(),
     )

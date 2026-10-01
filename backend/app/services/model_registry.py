@@ -1,8 +1,8 @@
 """Loads the real training artifacts and runs inference through them.
 
 Nothing here invents a prediction. If any artifact is missing or the loaded
-preprocessor/model pair is inconsistent, `ModelUnavailableError` is raised and
-the API turns it into an explicit 503 with the reason attached.
+preprocessor/model pair is inconsistent, `ModelUnavailableError` is raised.
+API boundaries return a stable public error and log the internal reason.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ from typing import Any, Sequence
 from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+MODEL_UNAVAILABLE_MESSAGE = "Selected prediction model is unavailable."
+PREDICTION_FAILED_MESSAGE = "Prediction could not be completed."
+MODEL_HEALTH_FAILED_MESSAGE = "Model health check failed."
 
 
 class ModelUnavailableError(RuntimeError):
@@ -64,7 +67,7 @@ class ModelBundle:
             "categorical_categories": {k: list(v) for k, v in self.categorical_categories.items()},
             "transformed_feature_names": list(self.transformed_feature_names),
             "transformed_feature_count": self.n_transformed_features,
-            "artifact_paths": dict(self.artifact_paths),
+            "artifact_paths": {name: Path(path).name for name, path in self.artifact_paths.items()},
             "warnings": list(self.warnings),
         }
 
@@ -268,9 +271,10 @@ def fuelcast_status() -> dict:
     ]
     try:
         predictor = get_predictor("fuelcast_xgboost")
-    except ModelUnavailableError as exc:
+    except ModelUnavailableError:
+        logger.exception("FuelCast model status check failed")
         return {"model_id": "fuelcast_xgboost", "run_id": "fuelcast-phase1-20260928-002",
-                "loaded": False, "error": str(exc), "api_available": False,
+                "loaded": False, "error": MODEL_HEALTH_FAILED_MESSAGE, "api_available": False,
                 "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
                 "wind_direction_convention_verified": False, "target_unit": "kg/s"}
     return {"loaded": True, "error": None, "api_available": True,
@@ -282,8 +286,9 @@ def status() -> dict:
     """Non-raising health summary for /health and /admin."""
     try:
         bundle = get_bundle()
-    except ModelUnavailableError as exc:
-        return {"loaded": False, "error": str(exc)}
+    except ModelUnavailableError:
+        logger.exception("Legacy model status check failed")
+        return {"loaded": False, "error": MODEL_HEALTH_FAILED_MESSAGE}
     return {"loaded": True, "error": None, **bundle.metadata()}
 
 
@@ -407,20 +412,27 @@ def evaluate_holdout() -> dict:
     settings = get_settings()
     path = settings.resolved_test_set_path
     if not path.is_file():
-        return {"available": False, "reason": f"Test split not found at {path}."}
+        logger.warning("Model evaluation test split not found: %s", path)
+        return {"available": False, "reason": "Model evaluation data is unavailable."}
     try:
         import numpy as np  # noqa: PLC0415
         from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover
-        return {"available": False, "reason": f"Missing dependency: {exc}"}
+    except ImportError:  # pragma: no cover
+        logger.exception("Model evaluation dependency unavailable")
+        return {"available": False, "reason": "Model evaluation is unavailable."}
 
     bundle = get_bundle()
-    with np.load(path, allow_pickle=False) as data:
-        if "features" not in data or "target" not in data:
-            return {"available": False, "reason": f"Unexpected npz keys: {list(data.files)}"}
-        features = data["features"]
-        target = data["target"]
-    predicted = bundle.model.predict(features)
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if "features" not in data or "target" not in data:
+                logger.warning("Model evaluation test split has unexpected keys: %s", list(data.files))
+                return {"available": False, "reason": "Model evaluation data is invalid."}
+            features = data["features"]
+            target = data["target"]
+        predicted = bundle.model.predict(features)
+    except Exception:
+        logger.exception("Model evaluation failed")
+        return {"available": False, "reason": "Model evaluation could not be completed."}
 
     result = {
         "available": True,

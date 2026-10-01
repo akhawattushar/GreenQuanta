@@ -2,7 +2,12 @@
 
 import csv
 import io
+from datetime import datetime, timezone
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.api import deps
 from app.api.routes import report
 from app.api.routes.report import _filtered, _rows_and_notes
 from app.services.reporting import SNAPSHOT_NOTE, normalize_record, report_columns, rows_to_csv
@@ -41,6 +46,7 @@ def test_xgboost_voyage_uses_stored_tonnes_without_reconversion():
     assert (row["model_id"], row["model_run_id"]) == ("fuelcast_xgboost", "phase1")
     assert (row["raw_prediction"], row["raw_prediction_unit"]) == (2.0, "kg/s")
     assert (row["normalized_fuel_tonnes"], row["normalized_fuel_unit"]) == (28.8, "tonnes")
+    assert row["normalized_fuel_unit_verified"] is True
     assert row["cost"] == 300.0 and row["emissions_unit"] == "tonnes CO2e"
     assert SNAPSHOT_NOTE in notes
 
@@ -54,6 +60,7 @@ def test_xgboost_scenario_and_optimization_provenance_and_filters():
                   "applied_overrides": {"wave_height": 3},
                   "post_prediction_assumptions": {"fuel_price_usd_per_tonne": 900}}]})
     sr, _ = normalize_record("scenario", scenario)
+    assert sr[0]["normalized_fuel_unit_verified"] is True
     assert sr[0]["scenario_type"] == "severe_weather"
     assert sr[0]["scenario_overrides"] == {"wave_height": 3}
     assert sr[0]["post_prediction_assumptions"]["fuel_price_usd_per_tonne"] == 900
@@ -83,6 +90,17 @@ def test_legacy_prediction_retains_stored_output_fields():
     assert rows[0]["raw_prediction_unit"] == "unverified"
     assert rows[0]["normalized_fuel_tonnes"] is None
     assert rows[0]["sailing_speed"] == 10.0
+
+
+def test_unverified_legacy_fuel_keeps_value_and_warns():
+    rows, _ = normalize_record("prediction", _run("prediction", {
+        "model_id": "legacy", "fuel_rate": 12.0, "fuel_rate_unit": "kg/h",
+        "unit_verified": False, "duration_hours": 2.0, "voyage_fuel_tonnes": 0.024}))
+    row = rows[0]
+    assert row["normalized_fuel_tonnes"] == 0.024
+    assert row["normalized_fuel_unit"] == "tonnes"
+    assert row["normalized_fuel_unit_verified"] is False
+    assert "normalized fuel unit is unverified" in row["data_quality_warnings"]
 
 
 def test_malformed_rows_are_excluded_without_failing_report():
@@ -160,3 +178,42 @@ def test_csv_route_exports_stored_provenance_without_database(monkeypatch):
     text = response.body.decode()
     assert "model_id" in text and "optimization_algorithm" in text
     assert "phase1" in text and "kg/s" in text and "7.2" in text
+
+
+def test_history_skips_bad_records_and_sorts_mixed_dates_without_500(monkeypatch):
+    class Runs:
+        def __init__(self, db, kind):
+            self.kind = kind
+
+        def history(self, user_id, limit):
+            if self.kind != "prediction":
+                return []
+            return [
+                {"created_at": "2026-10-02T01:00:00Z", "response": {"model_id": "legacy"}},
+                {"id": "bad-date", "created_at": [2026, 10, 1], "response": {"model_id": "legacy"}},
+                {"id": "newer", "created_at": datetime(2026, 10, 2, tzinfo=timezone.utc),
+                 "response": {"model_id": "legacy"}},
+                {"id": "older", "created_at": "2026-10-01T20:00:00+00:00",
+                 "response": {"model_id": "legacy"}},
+            ]
+
+    class Voyages:
+        def __init__(self, db):
+            pass
+
+        def list(self, user_id):
+            return [{"id": "middle", "departed_at": datetime(2026, 10, 2, 1, 0,
+                     tzinfo=timezone.utc), "model_id": "fuelcast_xgboost"}]
+
+    monkeypatch.setattr(report, "RunRepository", Runs)
+    monkeypatch.setattr(report, "VoyageRepository", Voyages)
+    app = FastAPI()
+    app.include_router(report.router, prefix="/api/v1")
+    app.dependency_overrides[deps.get_db] = lambda: object()
+    app.dependency_overrides[deps.get_current_user] = lambda: {"id": "user-1", "role": "operator"}
+    response = TestClient(app).get("/api/v1/report/history")
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == ["middle", "newer", "older"]
+    assert all(isinstance(item["created_at"], str) for item in body["items"])
+    assert body["warnings"]

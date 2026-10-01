@@ -5,11 +5,16 @@ import json
 
 import pytest
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api import deps
 from app.api.routes import prediction as prediction_route
+from app.api.routes import health as health_route
+from app.api.routes import admin as admin_route
+from app.core.config import Settings
 from app.schemas.models import FuelCastInputs
+from app.services import model_registry
 from app.services.model_registry import FeatureValidationError, ModelUnavailableError
 
 PATH = "/api/v1/prediction/fuel"
@@ -61,6 +66,7 @@ def test_legacy_request_without_model_id_still_predicts(client):
     assert body["fuel_rate_unit"] != "kg/s"
     assert body["features_used"]["wind_direction_relative"] == 90.0
     assert body["prediction_id"] == "prediction-test-id"
+    assert all("/" not in path for path in body["model_metadata"]["artifact_paths"].values())
 
 
 def test_explicit_fuelcast_request_predicts_only_raw_inputs(client, monkeypatch):
@@ -153,15 +159,63 @@ def test_predictor_errors_keep_safe_http_status(client, monkeypatch, error, expe
     monkeypatch.setattr(prediction_route, "get_predictor", lambda model_id: Predictor())
     response = client.post(PATH, json=FUELCAST_BODY)
     assert response.status_code == expected_status
-    assert str(error) in response.json()["detail"]
+    if isinstance(error, ModelUnavailableError):
+        assert response.json()["detail"] == "Prediction could not be completed."
+    else:
+        assert str(error) in response.json()["detail"]
 
 
 def test_unavailable_model_load_is_503(client, monkeypatch):
     def unavailable(model_id):
-        raise ModelUnavailableError("artifact unavailable")
+        raise ModelUnavailableError("/private/artifacts/model.json unavailable")
 
     monkeypatch.setattr(prediction_route, "get_predictor", unavailable)
-    assert client.post(PATH, json=FUELCAST_BODY).status_code == 503
+    response = client.post(PATH, json=FUELCAST_BODY)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Prediction could not be completed."
+    assert "/private/" not in response.text
+
+
+def test_legacy_model_error_and_public_health_hide_paths(client, monkeypatch):
+    def unavailable():
+        raise ModelUnavailableError("/private/artifacts/best_model.pkl missing")
+
+    monkeypatch.setattr(prediction_route, "get_bundle", unavailable)
+    response = client.post(PATH, json=LEGACY_BODY)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Selected prediction model is unavailable."
+    assert "/private/" not in response.text
+
+    monkeypatch.setattr(health_route.model_registry, "status", lambda: {
+        "loaded": False, "error": "/private/artifacts/best_model.pkl missing"})
+    monkeypatch.setattr(health_route, "get_db", lambda: type("DB", (), {"healthy": lambda self: True})())
+    health = health_route.health()
+    assert health.model_error == "Model health check failed."
+
+
+def test_model_status_and_missing_evaluation_data_hide_paths(monkeypatch, tmp_path):
+    def unavailable():
+        raise ModelUnavailableError("/private/artifacts/model.pkl missing")
+
+    monkeypatch.setattr(model_registry, "get_bundle", unavailable)
+    assert model_registry.status() == {"loaded": False, "error": "Model health check failed."}
+    monkeypatch.setattr(model_registry, "get_predictor", lambda model_id: unavailable())
+    assert model_registry.fuelcast_status()["error"] == "Model health check failed."
+    monkeypatch.setattr(model_registry, "get_settings", lambda: Settings(artifacts_dir=tmp_path))
+    metrics = model_registry.evaluate_holdout()
+    assert metrics["available"] is False
+    assert str(tmp_path) not in metrics["reason"]
+
+
+def test_admin_model_reload_error_hides_artifact_path(monkeypatch):
+    def unavailable(*, force_reload):
+        raise ModelUnavailableError("/private/artifacts/model.pkl missing")
+
+    monkeypatch.setattr(admin_route.model_registry, "get_bundle", unavailable)
+    with pytest.raises(HTTPException) as exc:
+        admin_route.reload_model({"id": "admin"})
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Selected prediction model is unavailable."
 
 
 def test_openapi_describes_all_fuelcast_units_and_convention():

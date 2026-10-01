@@ -238,3 +238,17 @@ def test_invalid_prediction_is_rejected(values):
     )
     with pytest.raises(ModelUnavailableError, match="FuelCast model"):
         predictor.predict([ROW])
+
+
+@pytest.mark.parametrize("rate", [0.0, 0.25, -0.25])
+def test_negative_fuel_rate_is_rejected_without_clamping(rate):
+    predictor = FuelCastXGBoost(
+        model=SimpleNamespace(predict=lambda frame: np.array([rate])),
+        preprocessor=SimpleNamespace(transform=lambda frame: np.ones((1, 7))),
+        transformed_features=TRANSFORMED_FEATURES,
+    )
+    if rate < 0:
+        with pytest.raises(ModelUnavailableError, match="negative fuel rate"):
+            predictor.predict([ROW])
+    else:
+        assert predictor.predict([ROW])["fuel_rates"] == [rate]

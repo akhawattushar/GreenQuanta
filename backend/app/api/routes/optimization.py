@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbDep, WriteUser
 from app.db.database import RunRepository
 from app.schemas.models import OptimizationRequest, OptimizationResponse
 from app.services.evaluator import Environment, EvaluationError, VesselState, assumptions_block
-from app.services.model_registry import ModelUnavailableError
+from app.services.model_registry import MODEL_UNAVAILABLE_MESSAGE, ModelUnavailableError
 from app.services.optimization import (
     ALGORITHM_LABELS,
     DEFAULT_SPEED_BOUNDS,
@@ -17,6 +19,7 @@ from app.services.optimization import (
 )
 
 router = APIRouter(prefix="/optimization", tags=["optimization"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/algorithms", summary="Available solvers and their status")
@@ -72,9 +75,10 @@ def run(payload: OptimizationRequest, user: WriteUser, db: DbDep) -> Optimizatio
     try:
         result = run_optimization(problem, algorithms=selected)
     except ModelUnavailableError as exc:
+        logger.exception("Optimization prediction model unavailable")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The selected prediction model is unavailable or failed during optimization.",
+            detail=MODEL_UNAVAILABLE_MESSAGE,
         ) from exc
     except EvaluationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

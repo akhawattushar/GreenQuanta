@@ -104,6 +104,8 @@ class FuelCastXGBoost:
                     or not np.isrealobj(values)
                     or not np.isfinite(values).all()):
                 raise ModelUnavailableError("FuelCast model returned a non-finite or non-numeric fuel rate.")
+            if (values < 0).any():
+                raise ModelUnavailableError("FuelCast model returned a negative fuel rate.")
             rates = [float(value) for value in values]
             return {"model_id": MODEL_ID, "run_id": RUN_ID,
                     "fuel_rates": rates, "fuel_rate_unit": TARGET_UNIT,

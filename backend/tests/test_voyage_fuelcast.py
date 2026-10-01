@@ -24,7 +24,8 @@ BASE = {
     "destination": "Singapore", "distance_nm": 120.0, "speed_knots": 12.0,
     "fuel_loaded_tonnes": 300.0,
 }
-FUELCAST = {**BASE, "model_id": "fuelcast_xgboost", "fuelcast_inputs": INPUTS}
+FUELCAST = {**BASE, "speed_knots": 15.55,
+            "model_id": "fuelcast_xgboost", "fuelcast_inputs": INPUTS}
 
 
 class MemoryVoyages:
@@ -93,10 +94,10 @@ def test_fuelcast_conversion_cost_emissions_and_persistence(voyage_client, monke
     assert response.status_code == 201, response.text
     body = response.json()
     assert calls == [INPUTS]
-    # 0.5 kg/s * (120 nm / 12 knots) * 3.6 = 18 tonnes.
-    assert body["planned_fuel_tonnes"] == 18.0
-    assert body["normalized_voyage_fuel_tonnes"] == 18.0
-    assert body["conversion_duration_hours"] == 10.0
+    expected_tonnes = 0.5 * (120.0 / 15.55) * 3.6
+    assert body["planned_fuel_tonnes"] == pytest.approx(expected_tonnes)
+    assert body["normalized_voyage_fuel_tonnes"] == pytest.approx(expected_tonnes)
+    assert body["conversion_duration_hours"] == pytest.approx(120.0 / 15.55)
     assert body["model_id"] == "fuelcast_xgboost"
     assert body["model_run_id"] == "test-run"
     assert body["raw_prediction"] == 0.5
@@ -104,16 +105,16 @@ def test_fuelcast_conversion_cost_emissions_and_persistence(voyage_client, monke
     assert body["normalized_voyage_fuel_unit"] == "tonnes"
     assert body["fuelcast_inputs"] == INPUTS
     settings = get_settings()
-    assert body["cost_usd"] == round(18 * settings.fuel_price_usd_per_tonne, 2)
-    assert body["cost_inr"] == round(18 * settings.fuel_price_usd_per_tonne * settings.usd_to_inr, 2)
-    assert body["ghg_tonnes_co2e"] == round(18 * CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"], 4)
+    assert body["cost_usd"] == round(expected_tonnes * settings.fuel_price_usd_per_tonne, 2)
+    assert body["cost_inr"] == round(expected_tonnes * settings.fuel_price_usd_per_tonne * settings.usd_to_inr, 2)
+    assert body["ghg_tonnes_co2e"] == round(expected_tonnes * CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"], 4)
     stored = next(iter(MemoryVoyages.rows.values()))
     assert stored["model_id"] == "fuelcast_xgboost"
-    assert stored["normalized_voyage_fuel_tonnes"] == 18.0
+    assert stored["normalized_voyage_fuel_tonnes"] == pytest.approx(expected_tonnes)
     assert stored["raw_prediction"] == 0.5
     fetched = voyage_client.get(f"/api/v1/voyage/{body['id']}")
     assert fetched.status_code == 200
-    assert fetched.json()["planned_fuel_tonnes"] == 18.0
+    assert fetched.json()["planned_fuel_tonnes"] == pytest.approx(expected_tonnes)
     assert len(calls) == 1  # Reading a stored result does not run inference again.
 
 
@@ -123,6 +124,40 @@ def test_older_record_without_provenance_remains_readable(voyage_client):
     fetched = voyage_client.get(f"/api/v1/voyage/{response.json()['id']}")
     assert fetched.status_code == 200
     assert fetched.json()["planned_fuel_tonnes"] == response.json()["planned_fuel_tonnes"]
+
+
+@pytest.mark.parametrize("speed_knots", [8.0 / 0.514444, 15.55])
+def test_matching_and_rounded_fuelcast_speeds_succeed(voyage_client, monkeypatch, speed_knots):
+    calls = _predictor(monkeypatch)
+    response = voyage_client.post("/api/v1/voyage", json={**FUELCAST, "speed_knots": speed_knots})
+    assert response.status_code == 201, response.text
+    assert calls == [INPUTS]
+
+
+def test_mismatched_fuelcast_speeds_fail_before_model_or_persistence(voyage_client, monkeypatch):
+    calls = _predictor(monkeypatch)
+    response = voyage_client.post("/api/v1/voyage", json={**FUELCAST, "speed_knots": 12.0})
+    assert response.status_code == 422
+    assert "same voyage speed" in response.json()["detail"]
+    assert calls == []
+    assert MemoryVoyages.rows == {}
+
+
+@pytest.mark.parametrize("departed_at", ["2026-10-01T10:20:30", "2026-10-01T10:20:30+05:30"])
+def test_valid_departure_timestamp_is_persisted_and_readable(voyage_client, departed_at):
+    response = voyage_client.post("/api/v1/voyage", json={**BASE, "departed_at": departed_at})
+    assert response.status_code == 201
+    stored = next(iter(MemoryVoyages.rows.values()))
+    assert stored["departed_at"] == departed_at
+    assert voyage_client.get(f"/api/v1/voyage/{response.json()['id']}").status_code == 200
+
+
+def test_invalid_departure_timestamp_is_422_before_model_or_persistence(voyage_client, monkeypatch):
+    calls = _predictor(monkeypatch)
+    response = voyage_client.post("/api/v1/voyage", json={**FUELCAST, "departed_at": "yesterday"})
+    assert response.status_code == 422
+    assert calls == []
+    assert MemoryVoyages.rows == {}
 
 
 @pytest.mark.parametrize("body", [
@@ -163,3 +198,15 @@ def test_artifact_failure_hides_internal_path(voyage_client, monkeypatch):
     assert response.status_code == 503
     assert "/private/" not in response.text
     assert MemoryVoyages.rows == {}
+
+
+def test_legacy_voyage_fuel_error_hides_internal_path(voyage_client, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise ModelUnavailableError("/private/legacy.pkl missing")
+
+    monkeypatch.setattr(voyage_service, "evaluate", unavailable)
+    response = voyage_client.post("/api/v1/voyage", json=BASE)
+    assert response.status_code == 201
+    assert response.json()["fuel_model_available"] is False
+    assert response.json()["fuel_error"] == "Selected prediction model is unavailable."
+    assert "/private/" not in response.text

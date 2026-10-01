@@ -10,14 +10,17 @@ contract does not change.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import math
 
 from app.core.config import get_settings
 from app.db.database import Database, VoyageRepository, new_id
 from app.services.evaluator import CO2E_TONNES_PER_TONNE_FUEL, Environment, VesselState, VoyagePlan, evaluate
-from app.services.model_registry import ModelUnavailableError, get_predictor
+from app.services.model_registry import MODEL_UNAVAILABLE_MESSAGE, ModelUnavailableError, get_predictor
+from app.services.optimization import KNOT_IN_M_S
 
 DATA_SOURCE = "user_entered"
+logger = logging.getLogger(__name__)
 
 #: Nominal sea state used to score voyages that have no observation attached.
 NOMINAL_ENVIRONMENT = Environment(
@@ -40,6 +43,14 @@ def _fuelcast_result(payload: dict) -> dict:
     if (not math.isfinite(payload["distance_nm"]) or not math.isfinite(payload["speed_knots"])
             or payload["distance_nm"] <= 0 or payload["speed_knots"] <= 0):
         raise VoyageCalculationError("Voyage duration must be finite and positive.")
+    # Both speeds are caller supplied. Check agreement without filling either input.
+    speed_over_ground = payload["fuelcast_inputs"]["speed_over_ground"]
+    if not math.isclose(payload["speed_knots"] * KNOT_IN_M_S, speed_over_ground,
+                        rel_tol=0.02, abs_tol=0.10):
+        raise VoyageCalculationError(
+            "speed_knots and fuelcast_inputs.speed_over_ground must describe the same voyage speed "
+            "(within 2% or 0.10 m/s)."
+        )
     duration = payload["distance_nm"] / payload["speed_knots"]
     if not math.isfinite(duration) or duration <= 0:
         raise VoyageCalculationError("Voyage duration must be finite and positive.")
@@ -210,11 +221,12 @@ def describe(voyage: dict, *, now: datetime | None = None) -> dict:
                 ),
             }
         )
-    except ModelUnavailableError as exc:
+    except ModelUnavailableError:
+        logger.exception("Legacy voyage model unavailable")
         payload.update(
             {
                 "fuel_model_available": False,
-                "fuel_error": str(exc),
+                "fuel_error": MODEL_UNAVAILABLE_MESSAGE,
                 "fuel_consumed_tonnes": None,
                 "fuel_remaining_tonnes": None,
             }

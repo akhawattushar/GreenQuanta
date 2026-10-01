@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbDep, WriteUser
@@ -10,6 +12,8 @@ from app.db.database import RunRepository
 from app.schemas.models import ModelInfoResponse, PredictionRequest, PredictionResponse
 from app.services.evaluator import Environment, VesselState, VoyagePlan, feature_row
 from app.services.model_registry import (
+    MODEL_UNAVAILABLE_MESSAGE,
+    PREDICTION_FAILED_MESSAGE,
     FeatureValidationError,
     ModelUnavailableError,
     UnknownModelError,
@@ -21,6 +25,7 @@ from app.services.model_registry import (
 )
 
 router = APIRouter(prefix="/prediction", tags=["prediction"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/model", response_model=ModelInfoResponse, summary="Loaded model metadata and measured metrics")
@@ -32,8 +37,12 @@ def model_info(_: CurrentUser) -> ModelInfoResponse:
     metadata = {k: v for k, v in info.items() if k not in {"loaded", "error"}}
     try:
         metrics = evaluate_holdout()
-    except ModelUnavailableError as exc:
-        metrics = {"available": False, "reason": str(exc)}
+    except ModelUnavailableError:
+        logger.exception("Model holdout evaluation failed")
+        metrics = {"available": False, "reason": MODEL_UNAVAILABLE_MESSAGE}
+    except Exception:
+        logger.exception("Model holdout evaluation failed")
+        metrics = {"available": False, "reason": "Model evaluation could not be completed."}
     return ModelInfoResponse(loaded=True, metadata=metadata, metrics=metrics, models=models)
 
 
@@ -52,7 +61,9 @@ def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> Pred
         except FeatureValidationError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except ModelUnavailableError as exc:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+            logger.exception("FuelCast prediction failed")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=PREDICTION_FAILED_MESSAGE) from exc
         response = PredictionResponse(
             model_id=prediction["model_id"],
             fuel_rate=round(prediction["fuel_rates"][0], 4),
@@ -71,10 +82,10 @@ def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> Pred
     try:
         bundle = get_bundle()
     except ModelUnavailableError as exc:
-        # Explicit failure. The API never substitutes a placeholder number here.
+        logger.exception("Legacy prediction model unavailable")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"The trained model is unavailable, so no prediction can be returned. {exc}",
+            detail=MODEL_UNAVAILABLE_MESSAGE,
         ) from exc
 
     plan = VoyagePlan(
@@ -90,7 +101,9 @@ def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> Pred
     except FeatureValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except ModelUnavailableError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        logger.exception("Legacy prediction failed")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=PREDICTION_FAILED_MESSAGE) from exc
 
     voyage_fuel = None
     duration = None

@@ -56,6 +56,7 @@ REPORT_COLUMNS = (
     "source_type", "source_id", "created_at", "vessel", "model_id", "model_run_id",
     "optimization_algorithm", "scenario_type", "raw_prediction", "raw_prediction_unit",
     "conversion_duration_hours", "normalized_fuel_tonnes", "normalized_fuel_unit",
+    "normalized_fuel_unit_verified",
     "cost", "cost_currency", "emissions", "emissions_unit", "fuel_type", "shore_power",
     "fuelcast_inputs", "scenario_overrides", "post_prediction_assumptions", "data_quality_warnings",
 )
@@ -119,6 +120,20 @@ def normalize_record(kind: str, record: dict) -> tuple[list[dict], list[str]]:
             raw_unit = None
         if model_id == "fuelcast_xgboost" and raw_unit != "kg/s":
             raw_unit = None  # A malformed historical row cannot establish the rate's unit.
+        unit_verified = source.get("normalized_fuel_unit_verified")
+        if not isinstance(unit_verified, bool):
+            unit_verified = None
+        if fuel is not None and unit_verified is None:
+            if kind == "prediction":
+                unit_verified = source.get("unit_verified")
+            elif model_id == "fuelcast_xgboost":
+                unit_verified = raw_unit == "kg/s"
+            elif model_id == "legacy":
+                assumptions = response.get("assumptions")
+                if isinstance(assumptions, dict):
+                    unit_verified = assumptions.get("model_target_unit_verified")
+        if not isinstance(unit_verified, bool):
+            unit_verified = None
         warnings = []
         if model_id == "unknown":
             warnings.append("model provenance unavailable")
@@ -130,6 +145,9 @@ def normalize_record(kind: str, record: dict) -> tuple[list[dict], list[str]]:
             warnings.append("conversion duration unavailable")
         if fuel is None:
             warnings.append("normalized voyage fuel unavailable")
+        elif unit_verified is not True:
+            warnings.append("normalized fuel unit is unverified" if unit_verified is False
+                            else "normalized fuel unit verification unavailable")
         snapshot = source.get("fuelcast_input_snapshot") or source.get("fixed_environment_snapshot") or source.get("fuelcast_inputs") or response.get("fixed_environment_snapshot") or record.get("fuelcast_inputs")
         if model_id == "fuelcast_xgboost" and not snapshot:
             warnings.append("environmental snapshot unavailable")
@@ -161,7 +179,8 @@ def normalize_record(kind: str, record: dict) -> tuple[list[dict], list[str]]:
             "optimization_algorithm": algorithm, "scenario_type": source.get("key") or source.get("scenario"),
             "raw_prediction": raw, "raw_prediction_unit": raw_unit,
             "conversion_duration_hours": duration, "normalized_fuel_tonnes": fuel,
-            "normalized_fuel_unit": fuel_unit, "cost": cost, "cost_currency": currency,
+            "normalized_fuel_unit": fuel_unit, "normalized_fuel_unit_verified": unit_verified,
+            "cost": cost, "cost_currency": currency,
             "emissions": emissions, "emissions_unit": "tonnes CO2e" if emissions is not None else None,
             "fuel_type": source.get("fuel_type"), "shore_power": source.get("shore_power"),
             "fuelcast_inputs": snapshot, "scenario_overrides": source.get("applied_overrides"),

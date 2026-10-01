@@ -3,9 +3,10 @@
 Backend for **GreenQuanta / QuantaFleet**.
 
 Fuel predictions come from the trained artifacts in `artifacts/`. Optimisation,
-scenario analysis and voyage fuel figures all route through the same model. If
-the artifacts cannot be loaded, the affected endpoints return **503 with the
-reason** — no placeholder number is ever substituted for model output.
+scenario analysis and voyage fuel figures use the explicitly selected predictor,
+with the legacy predictor as the default. If artifacts cannot be loaded, the
+affected endpoints return **503 with a path-free public message** — no
+placeholder number is substituted for model output.
 
 ---
 
@@ -260,8 +261,11 @@ operational results.
 Exports distinguish raw prediction rates (FuelCast in kg/s), stored normalized
 voyage fuel (tonnes), duration (hours), cost (USD or INR as labelled), and
 emissions (tonnes CO2e). They never convert a stored fuel total again or add
-rates with different units. Older records remain readable; an `unknown` model
-ID or a data-quality warning means the stored record cannot establish that
+rates with different units. `normalized_fuel_unit_verified` states whether a
+stored tonne value has verified units; unverified legacy values are retained
+with a warning and are ineligible for verified-tonne aggregates. Older records
+remain readable; an `unknown` model ID or a data-quality warning means the
+stored record cannot establish that
 provenance or unit. Older voyages did not persist modeled fuel results, so
 reports leave those values unavailable. A FuelCast report also notes that its
 single environmental snapshot is neither a time-series forecast nor measured
@@ -305,7 +309,7 @@ remains the default. For example, send this to `POST /api/v1/voyage`:
   "origin": "Mumbai",
   "destination": "Singapore",
   "distance_nm": 120.0,
-  "speed_knots": 12.0,
+  "speed_knots": 15.55,
   "fuel_loaded_tonnes": 300.0,
   "model_id": "fuelcast_xgboost",
   "fuelcast_inputs": {
@@ -321,16 +325,19 @@ remains the default. For example, send this to `POST /api/v1/voyage`:
 
 FuelCast inputs are speed over ground, wind speed, and current speed in m/s;
 wind direction in degrees; wave height in metres; and wave period in seconds.
-The voyage speed in knots determines duration only; it is never converted to
-FuelCast speed over ground. For the selected model, planned fuel in tonnes is
+The voyage speed in knots determines duration only; it is never substituted
+for FuelCast speed over ground. Both values must be supplied and agree within
+2% or 0.10 m/s after checking `speed_knots × 0.514444` against the explicit
+FuelCast value; disagreement returns 422. For the selected model, planned fuel
+in tonnes is
 `rate_kg_s × duration_hours × 3.6`, with the conversion performed once before
 cost and emissions calculations. Cost and emissions use the existing Marine
 Diesel price and tank-to-wake factor. The result records the run ID, raw kg/s
 rate, duration, and normalized tonnes. One explicitly supplied environmental
 snapshot represents the entire voyage; progress estimates are not measured
 consumption. The export still does not confirm whether wind direction is
-absolute or relative, or whether it is from or toward. Optimization and VQR
-integration remain pending.
+absolute or relative, or whether it is from or toward. Optimization and
+scenario integration are complete; VQR integration remains pending.
 
 ---
 

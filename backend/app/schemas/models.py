@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, FiniteFloat, field_validator, model_validator
@@ -311,6 +312,16 @@ class VoyageCreateRequest(BaseModel):
     speed_knots: float = Field(gt=0, le=60)
     fuel_loaded_tonnes: float = Field(gt=0, le=100000)
     departed_at: str | None = Field(default=None, description="ISO timestamp; defaults to now.")
+
+    @field_validator("departed_at")
+    @classmethod
+    def _valid_departure_timestamp(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                datetime.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError("departed_at must be a valid ISO-8601 timestamp.") from exc
+        return value
 
     @model_validator(mode="after")
     def _model_inputs(self):
