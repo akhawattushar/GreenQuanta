@@ -218,17 +218,76 @@ class OptimizationResponse(BaseModel):
 # scenarios
 # --------------------------------------------------------------------------
 class ScenarioRequest(BaseModel):
+    model_id: str = Field(default="legacy", description="Prediction model; legacy is the default.")
+    fuelcast_inputs: FuelCastInputs | None = Field(
+        default=None, description="Required six-field FuelCast reference snapshot for fuelcast_xgboost."
+    )
+    fuelcast_scenario_inputs: dict[str, FuelCastInputs] | None = Field(
+        default=None, description="Complete explicit FuelCast snapshots keyed by scenario ID; required for weather or speed changes."
+    )
+    fuelcast_speed_bounds_m_s: tuple[FiniteFloat, FiniteFloat] | None = Field(
+        default=None, description="Explicit m/s speed-over-ground bounds when optimizing FuelCast scenarios."
+    )
     scenarios: list[str] = Field(min_length=1)
     distance_nm: float = Field(gt=0, le=25000)
     vessel: VesselIn
-    environment: EnvironmentIn
+    environment: EnvironmentIn | None = None
     available_fuels: list[FuelType] = Field(min_length=1)
+    shore_power: bool | None = Field(default=None, description="FuelCast scenarios require shore power disabled.")
     speed_knots: float | None = Field(default=None, gt=0, le=60)
     max_eta_hours: float | None = Field(default=None, gt=0, le=5000)
     optimize: bool = True
     population_size: int = Field(default=24, ge=8, le=120)
     generations: int = Field(default=25, ge=5, le=200)
     seed: int = 42
+
+    @model_validator(mode="after")
+    def _model_contract(self):
+        fuelcast_fields = (self.fuelcast_inputs, self.fuelcast_scenario_inputs, self.fuelcast_speed_bounds_m_s)
+        if self.model_id == "legacy":
+            if self.environment is None:
+                raise ValueError("Legacy scenarios require environment.")
+            if any(value is not None for value in fuelcast_fields):
+                raise ValueError("FuelCast fields cannot be combined with the legacy model.")
+        elif self.model_id == "fuelcast_xgboost":
+            if self.fuelcast_inputs is None:
+                raise ValueError("fuelcast_xgboost requires fuelcast_inputs.")
+            if self.environment is not None or self.speed_knots is not None:
+                raise ValueError("Legacy environment and speed_knots cannot supply FuelCast inputs.")
+            if self.available_fuels != ["Marine Diesel"]:
+                raise ValueError("FuelCast scenarios currently require Marine Diesel only.")
+            if self.shore_power:
+                raise ValueError("FuelCast scenarios do not support shore power.")
+            if "high_cargo_demand" in self.scenarios:
+                raise ValueError("Cargo load is not a FuelCast model feature.")
+            overrides = self.fuelcast_scenario_inputs or {}
+            unsupported = set(overrides) - {"severe_weather", "fuelcast_speed_change"}
+            if unsupported or set(overrides) - set(self.scenarios):
+                raise ValueError("FuelCast scenario snapshots are accepted only for selected weather or speed-change scenarios.")
+            missing = {key for key in self.scenarios if key in {"severe_weather", "fuelcast_speed_change"}} - set(overrides)
+            if missing:
+                raise ValueError(f"FuelCast scenarios require explicit snapshots for: {', '.join(sorted(missing))}.")
+            if "fuelcast_speed_change" in overrides:
+                base = self.fuelcast_inputs.model_dump()
+                changed = overrides["fuelcast_speed_change"].model_dump()
+                if changed["speed_over_ground"] == base["speed_over_ground"] or any(
+                    changed[name] != base[name] for name in base if name != "speed_over_ground"
+                ):
+                    raise ValueError("fuelcast_speed_change must change only speed_over_ground in m/s.")
+            if self.optimize:
+                if self.fuelcast_speed_bounds_m_s is None:
+                    raise ValueError("Optimized FuelCast scenarios require fuelcast_speed_bounds_m_s.")
+                low, high = self.fuelcast_speed_bounds_m_s
+                if low <= 0 or high <= low:
+                    raise ValueError("FuelCast speed bounds must be positive and increasing.")
+                for snapshot in (self.fuelcast_inputs, *overrides.values()):
+                    if not low <= snapshot.speed_over_ground <= high:
+                        raise ValueError("Each FuelCast reference speed must lie within the m/s speed bounds.")
+            elif self.fuelcast_speed_bounds_m_s is not None:
+                raise ValueError("FuelCast speed bounds are only used when optimize=true.")
+        else:
+            raise ValueError(f"Unknown model ID {self.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")
+        return self
 
 
 class ScenarioResponse(BaseModel):

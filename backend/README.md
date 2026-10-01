@@ -166,8 +166,56 @@ nothing more. A **baseline plan** is included so any improvement is measured
 rather than asserted: the top of the speed band for legacy, or the supplied
 reference speed for FuelCast, on the first listed fuel without shore power.
 
-Speed search is clamped to 12–19 knots, the range present in the training data;
-searching outside it would be extrapolation.
+Legacy speed search is clamped to 12–19 knots, the range present in its training
+data; searching outside it would be extrapolation.
+
+## FuelCast scenarios
+
+The existing `POST /api/v1/scenario/run` defaults to the legacy model. To use
+`fuelcast_xgboost`, supply a complete six-field `fuelcast_inputs` snapshot.
+This fixed-speed example compares the base case, a price change, explicit
+weather, and an explicit speed-over-ground change:
+
+```json
+{
+  "model_id": "fuelcast_xgboost",
+  "scenarios": ["base", "high_fuel_price", "severe_weather", "fuelcast_speed_change"],
+  "distance_nm": 120,
+  "vessel": {"vessel_type": "Tanker Ship", "displacement": 12, "trim": 0},
+  "available_fuels": ["Marine Diesel"],
+  "shore_power": false,
+  "optimize": false,
+  "fuelcast_inputs": {
+    "speed_over_ground": 8, "wind_speed": 5.5, "wind_direction": 120,
+    "wave_height": 1.2, "wave_period": 7, "current_speed": 0.8
+  },
+  "fuelcast_scenario_inputs": {
+    "severe_weather": {
+      "speed_over_ground": 8, "wind_speed": 9, "wind_direction": 120,
+      "wave_height": 2, "wave_period": 8, "current_speed": 0.8
+    },
+    "fuelcast_speed_change": {
+      "speed_over_ground": 9, "wind_speed": 5.5, "wind_direction": 120,
+      "wave_height": 1.2, "wave_period": 7, "current_speed": 0.8
+    }
+  }
+}
+```
+
+Speed over ground, wind speed, and current speed are in m/s; wind direction is
+in degrees, wave height in metres, and wave period in seconds. Weather and
+speed changes require complete, explicit snapshots; legacy relative wind and
+knots are never mapped to FuelCast inputs. For `optimize: true`, also supply
+`fuelcast_speed_bounds_m_s` as `[minimum, maximum]`, with every reference speed
+inside the bounds. FuelCast scenario runs use Marine Diesel only and disable
+shore power. `high_cargo_demand` is unavailable because cargo load is not a
+trained FuelCast feature. A price scenario changes only cost after prediction;
+the emissions factor remains the stated Marine Diesel factor. Each row records
+model/run identity, raw kg/s rate, input snapshot, overrides, duration, fuel
+tonnes (`rate_kg_s × duration_hours × 3.6`), cost, emissions, and assumptions.
+The exported wind-direction convention remains unverified. One snapshot
+represents the whole voyage for each scenario; this runtime behavior does not
+establish model accuracy.
 
 ---
 

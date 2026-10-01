@@ -152,6 +152,7 @@ def evaluate_with_rate(
     max_eta_hours: float | None = None,
     max_ghg_tonnes: float | None = None,
     max_cost_inr: float | None = None,
+    fuel_price_usd_per_tonne: float | None = None,
 ) -> Evaluation:
     """Score a plan given an already-computed model rate."""
     settings = get_settings()
@@ -173,7 +174,8 @@ def evaluate_with_rate(
         aux_tonnes *= 1.0 - SHORE_POWER_AUXILIARY_REDUCTION
 
     total_tonnes = main_tonnes + aux_tonnes
-    price = settings.fuel_price_usd_per_tonne * RELATIVE_PRICE[plan.fuel_type]
+    base_price = settings.fuel_price_usd_per_tonne if fuel_price_usd_per_tonne is None else fuel_price_usd_per_tonne
+    price = base_price * RELATIVE_PRICE[plan.fuel_type]
     cost_usd = total_tonnes * price
     ghg = total_tonnes * CO2E_TONNES_PER_TONNE_FUEL[plan.fuel_type]
 

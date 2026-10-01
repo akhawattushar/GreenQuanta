@@ -62,6 +62,7 @@ class OptimizationProblem:
     fuelcast_inputs: dict | None = None
     predictor: object = field(default=None, repr=False)
     model_run_id: str | None = None
+    fuel_price_usd_per_tonne: float | None = None
     allow_shore_power: bool = True
     speed_bounds: tuple = DEFAULT_SPEED_BOUNDS
     max_eta_hours: float | None = None
@@ -91,6 +92,10 @@ class OptimizationProblem:
             raise EvaluationError("Distance must be greater than zero.")
         if not 0.0 <= self.cost_weight <= 1.0:
             raise EvaluationError("cost_weight must be between 0 and 1.")
+        if (self.fuel_price_usd_per_tonne is not None
+                and (not math.isfinite(self.fuel_price_usd_per_tonne)
+                     or self.fuel_price_usd_per_tonne <= 0)):
+            raise EvaluationError("Scenario fuel price must be finite and positive.")
         if self.model_id == "fuelcast_xgboost":
             if self.fuelcast_inputs is None:
                 raise EvaluationError("FuelCast optimization requires explicit fuelcast_inputs.")
@@ -172,7 +177,9 @@ def _fuelcast_evaluation(problem: OptimizationProblem, cand: Candidate, plan: Vo
     if not math.isfinite(fuel_tonnes) or fuel_tonnes < 0:
         return None
     settings = get_settings()
-    cost_usd = fuel_tonnes * settings.fuel_price_usd_per_tonne
+    price = (settings.fuel_price_usd_per_tonne if problem.fuel_price_usd_per_tonne is None
+             else problem.fuel_price_usd_per_tonne)
+    cost_usd = fuel_tonnes * price
     cost_inr = cost_usd * settings.usd_to_inr
     ghg = fuel_tonnes * CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"]
     if not all(math.isfinite(value) for value in (cost_usd, cost_inr, ghg)):
@@ -208,6 +215,7 @@ def _evaluate_candidates(problem: OptimizationProblem, population: list[Candidat
         return evaluate_many(
             plans, max_eta_hours=problem.max_eta_hours,
             max_ghg_tonnes=problem.max_ghg_tonnes, max_cost_inr=problem.max_cost_inr,
+            fuel_price_usd_per_tonne=problem.fuel_price_usd_per_tonne,
         )
     return [_fuelcast_evaluation(problem, cand, plan) for cand, plan in zip(population, plans)]
 
@@ -563,7 +571,8 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
     if not requested:
         raise EvaluationError(f"No known algorithm requested. Available: {', '.join(SOLVERS)}.")
     if problem.model_id == "fuelcast_xgboost":
-        problem.predictor = get_predictor("fuelcast_xgboost")
+        if problem.predictor is None:
+            problem.predictor = get_predictor("fuelcast_xgboost")
         problem.model_run_id = problem.predictor.metadata().get("run_id")
 
     # Calibrate the objective normalisers on the baseline plan first so every
@@ -660,7 +669,10 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
         }
         report["settings"]["speed_bounds_unit"] = "m/s over ground"
         report["assumptions"] = {
-            "base_fuel_price_usd_per_tonne": settings.fuel_price_usd_per_tonne,
+            "base_fuel_price_usd_per_tonne": (
+                settings.fuel_price_usd_per_tonne if problem.fuel_price_usd_per_tonne is None
+                else problem.fuel_price_usd_per_tonne
+            ),
             "usd_to_inr": settings.usd_to_inr,
             "co2e_tonnes_per_tonne_fuel": {
                 "Marine Diesel": CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"],
