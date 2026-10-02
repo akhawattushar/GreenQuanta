@@ -28,6 +28,13 @@ def health() -> HealthResponse:
         environment=settings.app_env,
         database=db_ok,
         model_loaded=bool(model_status["loaded"]),
-        model_error=model_status.get("error"),
+        model_error=(model_registry.MODEL_HEALTH_FAILED_MESSAGE if not model_status["loaded"] else None),
+        models={
+            "legacy": {"loaded": bool(model_status["loaded"]),
+                       "error": (model_registry.MODEL_HEALTH_FAILED_MESSAGE
+                                 if not model_status["loaded"] else None)},
+            "fuelcast_xgboost": model_registry.fuelcast_status(),
+            "fuelcast_vqr": model_registry.vqr_status(),
+        },
         pdf_export=reporting.pdf_available(),
     )

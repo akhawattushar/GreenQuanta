@@ -25,7 +25,10 @@ import random
 import time
 from dataclasses import dataclass, field
 
+from app.core.config import get_settings
 from app.services.evaluator import (
+    CO2E_TONNES_PER_TONNE_FUEL,
+    Evaluation,
     SUPPORTED_FUELS,
     Environment,
     EvaluationError,
@@ -34,10 +37,12 @@ from app.services.evaluator import (
     assumptions_block,
     evaluate_many,
 )
+from app.services.model_registry import ModelUnavailableError, get_predictor
 
 #: Speeds outside the training range would be extrapolation, so the search is
 #: clamped to the interval observed in the shipped dataset.
 DEFAULT_SPEED_BOUNDS = (12.0, 19.0)
+KNOT_IN_M_S = 0.514444
 
 ALGORITHMS = ("nsga2", "quantum")
 ALGORITHM_LABELS = {
@@ -51,8 +56,13 @@ ALGORITHM_LABELS = {
 class OptimizationProblem:
     distance_nm: float
     vessel: VesselState
-    environment: Environment
+    environment: Environment | None
     available_fuels: list
+    model_id: str = "legacy"
+    fuelcast_inputs: dict | None = None
+    predictor: object = field(default=None, repr=False)
+    model_run_id: str | None = None
+    fuel_price_usd_per_tonne: float | None = None
     allow_shore_power: bool = True
     speed_bounds: tuple = DEFAULT_SPEED_BOUNDS
     max_eta_hours: float | None = None
@@ -76,12 +86,27 @@ class OptimizationProblem:
                 f"Unsupported fuel(s): {', '.join(unknown)}. Supported: {', '.join(SUPPORTED_FUELS)}."
             )
         low, high = self.speed_bounds
-        if low <= 0 or high <= low:
+        if not math.isfinite(low) or not math.isfinite(high) or low <= 0 or high <= low:
             raise EvaluationError("Invalid speed bounds.")
-        if self.distance_nm <= 0:
+        if not math.isfinite(self.distance_nm) or self.distance_nm <= 0:
             raise EvaluationError("Distance must be greater than zero.")
         if not 0.0 <= self.cost_weight <= 1.0:
             raise EvaluationError("cost_weight must be between 0 and 1.")
+        if (self.fuel_price_usd_per_tonne is not None
+                and (not math.isfinite(self.fuel_price_usd_per_tonne)
+                     or self.fuel_price_usd_per_tonne <= 0)):
+            raise EvaluationError("Scenario fuel price must be finite and positive.")
+        if self.model_id == "fuelcast_xgboost":
+            if self.fuelcast_inputs is None:
+                raise EvaluationError("FuelCast optimization requires explicit fuelcast_inputs.")
+            if not low <= self.fuelcast_inputs["speed_over_ground"] <= high:
+                raise EvaluationError("FuelCast reference speed must lie within the m/s speed bounds.")
+            if self.available_fuels != ["Marine Diesel"] or self.allow_shore_power:
+                raise EvaluationError("FuelCast optimization requires Marine Diesel only and shore power disabled.")
+        elif self.model_id != "legacy":
+            raise EvaluationError(f"Unknown model ID {self.model_id!r}.")
+        elif self.environment is None:
+            raise EvaluationError("Legacy optimization requires environment.")
 
 
 @dataclass
@@ -94,6 +119,7 @@ class Candidate:
     evaluation: object = None
     rank: int = 0
     crowding: float = 0.0
+    provenance: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -113,7 +139,7 @@ class SolverResult:
 def _plan(problem: OptimizationProblem, cand: Candidate) -> VoyagePlan:
     return VoyagePlan(
         distance_nm=problem.distance_nm,
-        speed_knots=cand.speed,
+        speed_knots=_candidate_speed_knots(problem, cand.speed),
         vessel=problem.vessel,
         environment=problem.environment,
         fuel_type=problem.available_fuels[cand.fuel_index],
@@ -121,23 +147,98 @@ def _plan(problem: OptimizationProblem, cand: Candidate) -> VoyagePlan:
     )
 
 
-def _score(problem: OptimizationProblem, population: list) -> int:
-    """Evaluate a whole population with one batched model call."""
-    plans = [_plan(problem, c) for c in population]
-    evaluations = evaluate_many(
-        plans,
-        max_eta_hours=problem.max_eta_hours,
-        max_ghg_tonnes=problem.max_ghg_tonnes,
-        max_cost_inr=problem.max_cost_inr,
+def _candidate_speed_knots(problem: OptimizationProblem, speed: float) -> float:
+    """FuelCast candidates are explicit m/s over ground; legacy candidates are knots."""
+    if not math.isfinite(speed) or speed <= 0:
+        raise EvaluationError("Candidate speed must be finite and positive.")
+    return speed / KNOT_IN_M_S if problem.model_id == "fuelcast_xgboost" else speed
+
+
+def _fuelcast_evaluation(problem: OptimizationProblem, cand: Candidate, plan: VoyagePlan) -> Evaluation | None:
+    """Score one candidate; bad rates invalidate it without changing other candidates."""
+    duration = plan.distance_nm / plan.speed_knots
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    row = dict(problem.fuelcast_inputs)
+    row["speed_over_ground"] = cand.speed
+    try:
+        prediction = problem.predictor.predict([row])
+    except ModelUnavailableError as exc:
+        if "non-finite" in str(exc) or "non-numeric fuel rate" in str(exc):
+            return None
+        raise
+    rates = prediction.get("fuel_rates", [])
+    if prediction.get("fuel_rate_unit") != "kg/s" or len(rates) != 1:
+        raise ModelUnavailableError("FuelCast candidate must return one kg/s fuel rate.")
+    rate = rates[0]
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate):
+        return None
+    fuel_tonnes = rate * duration * 3.6
+    if not math.isfinite(fuel_tonnes) or fuel_tonnes < 0:
+        return None
+    settings = get_settings()
+    price = (settings.fuel_price_usd_per_tonne if problem.fuel_price_usd_per_tonne is None
+             else problem.fuel_price_usd_per_tonne)
+    cost_usd = fuel_tonnes * price
+    cost_inr = cost_usd * settings.usd_to_inr
+    ghg = fuel_tonnes * CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"]
+    if not all(math.isfinite(value) for value in (cost_usd, cost_inr, ghg)):
+        return None
+    violations = []
+    if problem.max_eta_hours is not None and duration > problem.max_eta_hours:
+        violations.append(f"ETA {duration:.1f} h exceeds the {problem.max_eta_hours:.1f} h limit.")
+    if problem.max_ghg_tonnes is not None and ghg > problem.max_ghg_tonnes:
+        violations.append(f"GHG {ghg:.1f} t exceeds the {problem.max_ghg_tonnes:.1f} t cap.")
+    if problem.max_cost_inr is not None and cost_inr > problem.max_cost_inr:
+        violations.append(f"Cost exceeds the configured budget.")
+    cand.provenance = {
+        "model_id": "fuelcast_xgboost", "model_run_id": problem.model_run_id,
+        "candidate_speed": cand.speed, "candidate_speed_unit": "m/s",
+        "speed_over_ground_m_s": cand.speed, "raw_prediction": rate,
+        "raw_prediction_unit": "kg/s", "conversion_duration_hours": duration,
+        "normalized_voyage_fuel_tonnes": fuel_tonnes,
+        "normalized_voyage_fuel_unit": "tonnes",
+        "fixed_environment_snapshot": {key: value for key, value in row.items()
+                                       if key != "speed_over_ground"},
+    }
+    return Evaluation(
+        fuel_rate=rate, fuel_rate_unit="kg/s", duration_hours=duration,
+        main_engine_fuel_tonnes=fuel_tonnes, auxiliary_fuel_tonnes=0.0,
+        fuel_tonnes=fuel_tonnes, cost_usd=cost_usd, cost_inr=cost_inr,
+        ghg_tonnes_co2e=ghg, feasible=not violations, violations=violations,
     )
+
+
+def _evaluate_candidates(problem: OptimizationProblem, population: list[Candidate]) -> list[Evaluation | None]:
+    plans = [_plan(problem, cand) for cand in population]
+    if problem.model_id == "legacy":
+        return evaluate_many(
+            plans, max_eta_hours=problem.max_eta_hours,
+            max_ghg_tonnes=problem.max_ghg_tonnes, max_cost_inr=problem.max_cost_inr,
+            fuel_price_usd_per_tonne=problem.fuel_price_usd_per_tonne,
+        )
+    return [_fuelcast_evaluation(problem, cand, plan) for cand, plan in zip(population, plans)]
+
+
+def _score(problem: OptimizationProblem, population: list) -> int:
+    """Score a population through its selected prediction model."""
+    evaluations = _evaluate_candidates(problem, population)
+    valid = [ev for ev in evaluations if ev is not None]
+    if not valid:
+        raise EvaluationError("No valid optimization candidates remain.")
     # Normalisers are fixed for the whole run (see `calibrate`), so scalar
     # scores are comparable across generations and between solvers.
     if problem.cost_ref <= 0 or problem.ghg_ref <= 0:
-        calibrate(problem, evaluations)
+        calibrate(problem, valid)
     cost_ref = max(problem.cost_ref, 1e-9)
     ghg_ref = max(problem.ghg_ref, 1e-9)
 
     for cand, ev in zip(population, evaluations):
+        if ev is None:
+            cand.evaluation = None
+            cand.objectives = (1e300, 1e300)
+            cand.scalar = 1e300
+            continue
         penalty = 1.0 + 0.5 * len(ev.violations)
         cand.evaluation = ev
         cand.objectives = (ev.cost_usd * penalty, ev.ghg_tonnes_co2e * penalty)
@@ -408,12 +509,14 @@ SOLVERS = {"nsga2": solve_nsga2, "quantum": solve_quantum_inspired}
 # --------------------------------------------------------------------------
 # orchestration
 # --------------------------------------------------------------------------
-def _candidate_to_plan_dict(problem: OptimizationProblem, cand: Candidate, label: str) -> dict:
+def _candidate_to_plan_dict(
+    problem: OptimizationProblem, cand: Candidate, label: str, algorithm_id: str | None = None,
+) -> dict:
     ev = cand.evaluation
-    return {
+    plan = {
         "label": label,
         "vessel_type": problem.vessel.vessel_type,
-        "speed_knots": round(cand.speed, 2),
+        "speed_knots": round(_candidate_speed_knots(problem, cand.speed), 2),
         "fuel_type": problem.available_fuels[cand.fuel_index],
         "shore_power": bool(cand.shore_power),
         "fuel_rate": ev.fuel_rate,
@@ -428,19 +531,28 @@ def _candidate_to_plan_dict(problem: OptimizationProblem, cand: Candidate, label
         "violations": list(ev.violations),
         "objective": round(cand.scalar, 6),
     }
+    if problem.model_id == "fuelcast_xgboost":
+        plan.update(cand.provenance)
+        plan["algorithm_id"] = algorithm_id
+    return plan
 
 
 def baseline_plan(problem: OptimizationProblem) -> dict:
-    """Un-optimised reference: top of the speed band on the first listed fuel,
-    no shore power. Included so any improvement is measured, not asserted."""
-    cand = Candidate(speed=problem.speed_bounds[1], fuel_index=0, shore_power=False)
-    plan = _plan(problem, cand)
-    evaluation = evaluate_many(
-        [plan],
-        max_eta_hours=problem.max_eta_hours,
-        max_ghg_tonnes=problem.max_ghg_tonnes,
-        max_cost_inr=problem.max_cost_inr,
-    )[0]
+    """Un-optimised reference on the first fuel, with no shore power."""
+    speeds = [problem.speed_bounds[1]]
+    if problem.model_id == "fuelcast_xgboost":
+        low, high = problem.speed_bounds
+        speeds = [problem.fuelcast_inputs["speed_over_ground"], high, (low + high) / 2, low]
+    cand = None
+    evaluation = None
+    for speed in speeds:
+        candidate = Candidate(speed=speed, fuel_index=0, shore_power=False)
+        evaluation = _evaluate_candidates(problem, [candidate])[0]
+        if evaluation is not None:
+            cand = candidate
+            break
+    if cand is None:
+        raise EvaluationError("No valid optimization candidates remain.")
     if problem.cost_ref <= 0 or problem.ghg_ref <= 0:
         calibrate(problem, [evaluation])
     cand.evaluation = evaluation
@@ -449,7 +561,7 @@ def baseline_plan(problem: OptimizationProblem) -> dict:
         problem.cost_weight * (evaluation.cost_usd / max(problem.cost_ref, 1e-9))
         + (1.0 - problem.cost_weight) * (evaluation.ghg_tonnes_co2e / max(problem.ghg_ref, 1e-9))
     ) * (1.0 + 0.5 * len(evaluation.violations))
-    return _candidate_to_plan_dict(problem, cand, ALGORITHM_LABELS["baseline"])
+    return _candidate_to_plan_dict(problem, cand, ALGORITHM_LABELS["baseline"], "baseline")
 
 
 def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum")) -> dict:
@@ -458,6 +570,10 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
     requested = [a for a in algorithms if a in SOLVERS]
     if not requested:
         raise EvaluationError(f"No known algorithm requested. Available: {', '.join(SOLVERS)}.")
+    if problem.model_id == "fuelcast_xgboost":
+        if problem.predictor is None:
+            problem.predictor = get_predictor("fuelcast_xgboost")
+        problem.model_run_id = problem.predictor.metadata().get("run_id")
 
     # Calibrate the objective normalisers on the baseline plan first so every
     # solver optimises exactly the same scalar function.
@@ -469,7 +585,7 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
     for name in requested:
         result = results[name]
         if result.best is not None:
-            plans.append(_candidate_to_plan_dict(problem, result.best, result.label))
+            plans.append(_candidate_to_plan_dict(problem, result.best, result.label, name))
     plans.append(base)
     plans.sort(key=lambda p: (not p["feasible"], p["objective"]))
 
@@ -514,15 +630,16 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
             "note": "Measured against the baseline plan defined above, not against any published benchmark.",
         }
 
-    return {
+    report = {
         "algorithms_run": requested,
         "algorithm_labels": {name: ALGORITHM_LABELS[name] for name in requested},
         "plans": plans,
         "best_plan": best_plan,
         "pareto_front": [
-            _candidate_to_plan_dict(problem, c, results[name].label)
+            _candidate_to_plan_dict(problem, c, results[name].label, name)
             for name in requested
             for c in results[name].front[:12]
+            if c.evaluation is not None
         ],
         "convergence": convergence,
         "comparison": comparison,
@@ -542,3 +659,30 @@ def run_optimization(problem: OptimizationProblem, algorithms=("nsga2", "quantum
             "machine for this problem only and are not evidence of quantum advantage."
         ),
     }
+    if problem.model_id == "fuelcast_xgboost":
+        settings = get_settings()
+        report["model_id"] = "fuelcast_xgboost"
+        report["model_run_id"] = problem.model_run_id
+        report["fixed_environment_snapshot"] = {
+            key: value for key, value in problem.fuelcast_inputs.items()
+            if key != "speed_over_ground"
+        }
+        report["settings"]["speed_bounds_unit"] = "m/s over ground"
+        report["assumptions"] = {
+            "base_fuel_price_usd_per_tonne": (
+                settings.fuel_price_usd_per_tonne if problem.fuel_price_usd_per_tonne is None
+                else problem.fuel_price_usd_per_tonne
+            ),
+            "usd_to_inr": settings.usd_to_inr,
+            "co2e_tonnes_per_tonne_fuel": {
+                "Marine Diesel": CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"],
+            },
+            "note": ("FuelCast kg/s is converted once to voyage tonnes. Cost and tank-to-wake "
+                     "emissions use Marine Diesel factors; no fuel-type, auxiliary, or shore-power "
+                     "adjustment is applied."),
+        }
+        report["disclaimer"] += (
+            " FuelCast uses one fixed environmental snapshot for every candidate; "
+            "this prototype is not physically validated."
+        )
+    return report

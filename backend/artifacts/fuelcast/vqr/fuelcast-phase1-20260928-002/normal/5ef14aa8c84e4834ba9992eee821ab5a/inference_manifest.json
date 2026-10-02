@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "model_id": "fuelcast_vqr",
+  "model_family": "variational_quantum_regressor",
+  "run_id": "fuelcast-phase1-20260928-002",
+  "mode": "normal",
+  "attempt_id": "5ef14aa8c84e4834ba9992eee821ab5a",
+  "application_status": "candidate",
+  "execution_type": "exact quantum simulator",
+  "simulator_classification": "QMLEstimator statevector simulation",
+  "hardware_execution": false,
+  "source_candidate_manifest": {
+    "filename": "candidate_manifest.json",
+    "sha256": "893320788c23e14c08ccd8aa078afd34a20022f5c30c5decd1ea2b8695a4170d"
+  },
+  "reference_source": {
+    "commit": "acab757",
+    "source_root_relative_path": "greenfleet/ml_pipeline/quantum/fuelcast_vqr_model.py",
+    "sha256": "e053d9f17a6ab5434a84ed1fcb633c22d8512cda81db683ec3250af32e752353",
+    "identity_limitation": "The original training candidate manifest did not cryptographically record the source commit or source-file hash; this is an audited reconstruction reference, not proof of the exact training checkout."
+  },
+  "raw_features": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "feature_units": {
+    "speed_over_ground": "m/s",
+    "wind_speed": "m/s",
+    "wind_direction": "degrees",
+    "wave_height": "m",
+    "wave_period": "s",
+    "current_speed": "m/s"
+  },
+  "target": {
+    "name": "fuel_consumption_kg_s",
+    "unit": "kg/s",
+    "source_field": "Consumer_Total_MomentaryFuel",
+    "inverse_scaling": "Apply the training-fitted vqr_target_scaler.pkl MinMaxScaler inverse_transform to the simulator expectation reshaped as (n, 1); its fitted feature range is [-1, 1]."
+  },
+  "circuit": {
+    "num_qubits": 6,
+    "weight_shape": [12],
+    "feature_map": "One RY rotation on each qubit: x[0] through x[5] follow raw_features order.",
+    "ansatz": "Qiskit real_amplitudes with theta[0] through theta[11], one repetition and a final rotation layer.",
+    "entanglement": "linear",
+    "cnot_direction": "0->1, 1->2, 2->3, 3->4, 4->5",
+    "ansatz_repetitions": 1,
+    "observable": "Mean of the six single-qubit Z observables, each with coefficient 1/6; Qiskit Pauli labels use the rightmost character for qubit 0.",
+    "estimator": "qiskit_machine_learning.primitives.QMLEstimator through EstimatorQNN",
+    "default_precision": 0.0,
+    "inference_batch_size": 256
+  },
+  "packaged_artifacts": {
+    "candidate_manifest.json": {
+      "filename": "candidate_manifest.json",
+      "sha256": "893320788c23e14c08ccd8aa078afd34a20022f5c30c5decd1ea2b8695a4170d",
+      "bytes": 4014
+    },
+    "circuit_config.json": {
+      "filename": "circuit_config.json",
+      "sha256": "d7cd300f6ce69a30bd80ff1c680c66a9a6afb55ac0d5c163b4c5c38dbc29553f",
+      "bytes": 1028
+    },
+    "feature_schema.json": {
+      "filename": "feature_schema.json",
+      "sha256": "6492c06fc7f68c0484a080f372f2ff0bf8946c183e4136e87dabd68ae94904a7",
+      "bytes": 1384
+    },
+    "validation_metrics.json": {
+      "filename": "validation_metrics.json",
+      "sha256": "e3c75aeb5e8a2cc63e409eda366b3b4d5a0976b079fb5b5f379c6d0b46839ed6",
+      "bytes": 763
+    },
+    "vqr_preprocessor.pkl": {
+      "filename": "vqr_preprocessor.pkl",
+      "sha256": "4bbf1a3e36e8ddd1773a2b5a4c982c6cb0c5aac4373e8ac0154326d2cce73ed3",
+      "bytes": 1270
+    },
+    "vqr_target_scaler.pkl": {
+      "filename": "vqr_target_scaler.pkl",
+      "sha256": "578dc9c6577904825105a79717c78e8d621343a3441bd5672417319d706cb761",
+      "bytes": 719
+    },
+    "weights.npz": {
+      "filename": "weights.npz",
+      "sha256": "91ff7d1e749332a98a978887cda96c8d7803568fb1212fe4766831e270b3ce9c",
+      "bytes": 312
+    }
+  },
+  "dependency_versions": {
+    "python": "3.11.16",
+    "python_provenance": "Observed in the existing SIH export environment; not recorded by the original candidate manifest.",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "joblib": "1.6.0",
+    "qiskit": "2.5.2",
+    "qiskit-machine-learning": "0.9.1",
+    "qiskit-aer": "not required"
+  },
+  "greenquanta_runtime": {
+    "observed_local_python": "3.13.5",
+    "compatibility": "unverified"
+  },
+  "validation": {
+    "split": "validation",
+    "sample_count": 26096,
+    "metrics": {
+      "mae_kg_s": 0.2830684142645837,
+      "rmse_kg_s": 0.3683189258325035,
+      "r2": 0.5553620947467861
+    },
+    "limitation": "These are validation metrics, not held-out test metrics or evidence of production readiness."
+  },
+  "wind_direction_convention": "Absolute versus relative and from versus toward are unverified.",
+  "absent_model_features": [
+    "cargo_load",
+    "fuel_type",
+    "shore_power"
+  ],
+  "environmental_snapshot_limitation": "One supplied environmental snapshot would represent an entire calculation; this is not a time-series route forecast or measured voyage telemetry.",
+  "quick_candidate_exclusion": "The quick candidate trained on 60 sampled rows for a simulator smoke test and is not packaged or selected as the application model.",
+  "packaging_note": "Only inference files and selected metadata are packaged. The source candidate_manifest.json also hashes training-only files that remain in SIH and are intentionally absent here; use packaged_artifacts for this bundle's integrity checks."
+}

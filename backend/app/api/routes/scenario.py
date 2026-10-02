@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbDep, WriteUser
 from app.db.database import RunRepository
 from app.schemas.models import ScenarioRequest, ScenarioResponse
 from app.services.evaluator import Environment, EvaluationError, VesselState
-from app.services.model_registry import ModelUnavailableError
+from app.services.model_registry import MODEL_UNAVAILABLE_MESSAGE, ModelUnavailableError
 from app.services.scenario import list_scenarios, run_scenarios
 
 router = APIRouter(prefix="/scenario", tags=["scenario"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/catalog", summary="Scenarios this service can evaluate")
@@ -26,8 +29,13 @@ def run(payload: ScenarioRequest, user: WriteUser, db: DbDep) -> ScenarioRespons
             scenario_keys=list(payload.scenarios),
             distance_nm=payload.distance_nm,
             vessel=VesselState(**payload.vessel.model_dump()),
-            environment=Environment(**payload.environment.model_dump()),
+            environment=(Environment(**payload.environment.model_dump()) if payload.environment is not None else None),
             available_fuels=list(payload.available_fuels),
+            model_id=payload.model_id,
+            fuelcast_inputs=(payload.fuelcast_inputs.model_dump() if payload.fuelcast_inputs is not None else None),
+            fuelcast_scenario_inputs={key: value.model_dump() for key, value in
+                                      (payload.fuelcast_scenario_inputs or {}).items()},
+            fuelcast_speed_bounds_m_s=payload.fuelcast_speed_bounds_m_s,
             speed_knots=payload.speed_knots,
             max_eta_hours=payload.max_eta_hours,
             optimize=payload.optimize,
@@ -36,9 +44,10 @@ def run(payload: ScenarioRequest, user: WriteUser, db: DbDep) -> ScenarioRespons
             seed=payload.seed,
         )
     except ModelUnavailableError as exc:
+        logger.exception("Scenario prediction model unavailable")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Scenario analysis needs the trained model, which is unavailable. {exc}",
+            detail=MODEL_UNAVAILABLE_MESSAGE,
         ) from exc
     except EvaluationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
