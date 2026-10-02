@@ -299,6 +299,22 @@ The response identifies `fuelcast_xgboost` and labels `fuel_rate` in `kg/s`;
 `voyage_fuel_tonnes` and `duration_hours` are null. Omit `model_id` for the
 existing legacy request flow. Mixing `fuelcast_inputs` with legacy inputs
 returns 422. `/prediction/model` reports each predictor's load and API status.
+
+The normal FuelCast VQR candidate is also available for **direct prediction**.
+Use the same six-field `fuelcast_inputs` object above with
+`"model_id": "fuelcast_vqr"`. Speed over ground, wind speed, and current speed
+are in m/s; wind direction is in degrees in [0, 360); wave height is in metres;
+and wave period is in seconds. The response includes `model_id`,
+`model_run_id` (`fuelcast-phase1-20260928-002`), `attempt_id`
+(`5ef14aa8c84e4834ba9992eee821ab5a`), and `execution_type`
+(`exact quantum simulator`). It returns one raw `fuel_rate` in kg/s, without
+voyage tonnes, cost, or emissions. This runs on an exact simulator, not quantum
+hardware. The exported validation metrics are validation results, not held-out
+test results or evidence of application accuracy. Cargo load, fuel type, and
+shore power are not VQR model features. The wind-direction absolute/relative
+and from/toward convention remains unverified; callers must provide the
+explicit FuelCast value, not a translation of legacy relative wind. VQR use in
+voyage, optimization, and scenario services remains pending.
 Voyage records can also select `fuelcast_xgboost` explicitly. The legacy model
 remains the default. For example, send this to `POST /api/v1/voyage`:
 
@@ -337,7 +353,8 @@ rate, duration, and normalized tonnes. One explicitly supplied environmental
 snapshot represents the entire voyage; progress estimates are not measured
 consumption. The export still does not confirm whether wind direction is
 absolute or relative, or whether it is from or toward. Optimization and
-scenario integration are complete; VQR integration remains pending.
+scenario XGBoost integration are complete; VQR integration in those downstream
+services remains pending.
 
 ---
 

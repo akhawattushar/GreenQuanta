@@ -78,6 +78,9 @@ _lock = threading.Lock()
 _fuelcast_bundle: Any | None = None
 _fuelcast_error: str | None = None
 _fuelcast_lock = threading.Lock()
+_vqr_bundle: Any | None = None
+_vqr_error: str | None = None
+_vqr_lock = threading.Lock()
 
 
 def _require(path: Path, label: str) -> None:
@@ -243,24 +246,44 @@ def get_predictor(model_id: str = "legacy", *, force_reload: bool = False):
     """Select an independent predictor without changing the legacy default."""
     if model_id == "legacy":
         return get_bundle(force_reload=force_reload)
-    if model_id != "fuelcast_xgboost":
-        raise UnknownModelError(f"Unknown model ID {model_id!r}. Available IDs: legacy, fuelcast_xgboost.")
-    from app.services.fuelcast_xgboost import load_fuelcast_xgboost
+    if model_id == "fuelcast_xgboost":
+        from app.services.fuelcast_xgboost import load_fuelcast_xgboost
 
-    global _fuelcast_bundle, _fuelcast_error
-    with _fuelcast_lock:
-        if force_reload:
-            _fuelcast_bundle, _fuelcast_error = None, None
-        if _fuelcast_bundle is not None:
+        global _fuelcast_bundle, _fuelcast_error
+        with _fuelcast_lock:
+            if force_reload:
+                _fuelcast_bundle, _fuelcast_error = None, None
+            if _fuelcast_bundle is not None:
+                return _fuelcast_bundle
+            if _fuelcast_error is not None:
+                raise ModelUnavailableError(_fuelcast_error)
+            try:
+                _fuelcast_bundle = load_fuelcast_xgboost(get_settings())
+            except ModelUnavailableError as exc:
+                _fuelcast_error = str(exc)
+                raise
             return _fuelcast_bundle
-        if _fuelcast_error is not None:
-            raise ModelUnavailableError(_fuelcast_error)
-        try:
-            _fuelcast_bundle = load_fuelcast_xgboost(get_settings())
-        except ModelUnavailableError as exc:
-            _fuelcast_error = str(exc)
-            raise
-        return _fuelcast_bundle
+    if model_id == "fuelcast_vqr":
+        from app.services.fuelcast_vqr import load_fuelcast_vqr
+
+        global _vqr_bundle, _vqr_error
+        with _vqr_lock:
+            if force_reload:
+                _vqr_bundle, _vqr_error = None, None
+            if _vqr_bundle is not None:
+                return _vqr_bundle
+            if _vqr_error is not None:
+                raise ModelUnavailableError(_vqr_error)
+            try:
+                selected = load_fuelcast_vqr(get_settings())
+            except ModelUnavailableError as exc:
+                _vqr_error = str(exc)
+                raise
+            _vqr_bundle = selected
+            return selected
+    raise UnknownModelError(
+        f"Unknown model ID {model_id!r}. Available IDs: legacy, fuelcast_xgboost, fuelcast_vqr."
+    )
 
 
 def fuelcast_status() -> dict:
@@ -280,6 +303,31 @@ def fuelcast_status() -> dict:
     return {"loaded": True, "error": None, "api_available": True,
             "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
             "wind_direction_convention_verified": False, **predictor.metadata()}
+
+
+def vqr_status() -> dict:
+    """Independent readiness summary; a VQR failure does not affect legacy."""
+    base = {
+        "model_id": "fuelcast_vqr",
+        "display_name": "FuelCast Variational Quantum Regressor",
+        "model_family": "variational_quantum_regressor",
+        "run_id": "fuelcast-phase1-20260928-002",
+        "mode": "normal",
+        "attempt_id": "5ef14aa8c84e4834ba9992eee821ab5a",
+        "target_unit": "kg/s",
+        "execution_type": "exact quantum simulator",
+        "hardware_execution": False,
+        "input_contract": "explicit_fuelcast_inputs",
+        "wind_direction_convention_verified": False,
+    }
+    try:
+        predictor = get_predictor("fuelcast_vqr")
+    except ModelUnavailableError:
+        logger.exception("FuelCast VQR model status check failed")
+        return {**base, "loaded": False, "api_available": False,
+                "error": MODEL_HEALTH_FAILED_MESSAGE}
+    return {**base, **predictor.metadata(), "loaded": True, "api_available": True,
+            "error": None}
 
 
 def status() -> dict:

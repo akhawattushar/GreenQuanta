@@ -58,23 +58,26 @@ inputs, units, simulator circuit, dependencies, and validation provenance.
 The included `candidate_manifest.json` also hashes training-only files that
 remain in SIH; its full artifact set is not present in this inference bundle.
 The quick candidate used 60 sampled training rows as a smoke test and was not
-copied into the application bundle. VQR is not registered or API-accessible.
+copied into the application bundle. The normal candidate is registered as
+`fuelcast_vqr` for direct prediction using the exact simulator. It is not
+connected to voyage, optimization, or scenario calculations.
 
 ## Contract gate for backend integration
 
-- Before VQR runtime integration, add compatible Qiskit and Qiskit Machine
-  Learning dependencies, verify Python 3.13 compatibility, implement and test
-  the adapter, confirm the wind-direction reference convention, and run API
-  tests. The normal bundle is a candidate, not a production-ready model.
+- The direct-prediction adapter uses Qiskit and Qiskit Machine Learning on
+  Python 3.13. Voyage, optimization, and scenario integration still require
+  verified live-input semantics, particularly the wind-direction reference
+  convention. The normal bundle is a candidate, not a production-ready model.
   Its reported metrics are from validation, not a held-out test.
 - For XGBoost, confirm the export owner's wind-direction convention and
   manifest convention if the bundle and candidate roles differ. The local
   synthetic-row inference and transformed order checks have passed.
-- Before mapping any FuelCast candidate into the API, resolve the API's
-  relative wind direction (degrees from vessel heading) against FuelCast's
-  wind direction, verify sailing speed against speed over ground, and record
-  all unit conversions. Reconcile the XGBoost test-metric claim with the
-  project's split history before exposing metrics.
+- Before automatically mapping GreenQuanta voyage/weather fields to any
+  FuelCast candidate, resolve relative wind direction (degrees from vessel
+  heading) against FuelCast's wind direction, verify sailing speed against
+  speed over ground, and record all unit conversions. Direct prediction uses
+  only the caller's explicit FuelCast fields. Reconcile the XGBoost test-metric
+  claim with the project's split history before exposing metrics.
 
 Keep the current legacy loader paths available until a candidate passes this
 gate. The source export command is not available in this repository; record it

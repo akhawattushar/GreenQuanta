@@ -103,7 +103,7 @@ class PredictionRequest(BaseModel):
     environment: EnvironmentIn | None = None
     distance_nm: float | None = Field(default=None, gt=0, le=25000)
     fuelcast_inputs: FuelCastInputs | None = Field(
-        default=None, description="Required only for fuelcast_xgboost; values are used without legacy-field mapping."
+        default=None, description="Required for fuelcast_xgboost or fuelcast_vqr; values are used without legacy-field mapping."
     )
 
     @model_validator(mode="after")
@@ -114,18 +114,21 @@ class PredictionRequest(BaseModel):
             missing = [name for name in ("sailing_speed", "vessel", "environment") if getattr(self, name) is None]
             if missing:
                 raise ValueError(f"Legacy prediction requires: {', '.join(missing)}.")
-        elif self.model_id == "fuelcast_xgboost":
+        elif self.model_id in {"fuelcast_xgboost", "fuelcast_vqr"}:
             if self.fuelcast_inputs is None:
-                raise ValueError("fuelcast_xgboost requires fuelcast_inputs with all six raw FuelCast fields.")
+                raise ValueError(f"{self.model_id} requires fuelcast_inputs with all six raw FuelCast fields.")
             legacy_fields = [name for name in ("sailing_speed", "vessel", "environment", "distance_nm")
                              if getattr(self, name) is not None]
             if legacy_fields:
-                raise ValueError(f"fuelcast_xgboost does not accept legacy fields: {', '.join(legacy_fields)}.")
+                raise ValueError(f"{self.model_id} does not accept legacy fields: {', '.join(legacy_fields)}.")
         return self
 
 
 class PredictionResponse(BaseModel):
     model_id: str = "legacy"
+    model_run_id: str | None = None
+    attempt_id: str | None = None
+    execution_type: str | None = None
     fuel_rate: float
     fuel_rate_unit: str
     unit_verified: bool
@@ -372,6 +375,7 @@ class HealthResponse(BaseModel):
     database: bool
     model_loaded: bool
     model_error: str | None = None
+    models: dict[str, Any] | None = None
     pdf_export: bool
 
 

@@ -19,6 +19,7 @@ from app.services.model_registry import (
     UnknownModelError,
     evaluate_holdout,
     fuelcast_status,
+    vqr_status,
     get_bundle,
     get_predictor,
     status as model_status,
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 @router.get("/model", response_model=ModelInfoResponse, summary="Loaded model metadata and measured metrics")
 def model_info(_: CurrentUser) -> ModelInfoResponse:
     info = model_status()
-    models = {"legacy": info, "fuelcast_xgboost": fuelcast_status()}
+    models = {"legacy": info, "fuelcast_xgboost": fuelcast_status(), "fuelcast_vqr": vqr_status()}
     if not info["loaded"]:
         return ModelInfoResponse(loaded=False, error=info["error"], models=models)
     metadata = {k: v for k, v in info.items() if k not in {"loaded", "error"}}
@@ -50,9 +51,45 @@ def model_info(_: CurrentUser) -> ModelInfoResponse:
 def predict_fuel(payload: PredictionRequest, user: WriteUser, db: DbDep) -> PredictionResponse:
     settings = get_settings()
 
-    if payload.model_id not in {"legacy", "fuelcast_xgboost"}:
+    if payload.model_id not in {"legacy", "fuelcast_xgboost", "fuelcast_vqr"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=str(UnknownModelError(f"Unknown model ID {payload.model_id!r}. Available IDs: legacy, fuelcast_xgboost.")))
+                            detail=str(UnknownModelError(
+                                f"Unknown model ID {payload.model_id!r}. "
+                                "Available IDs: legacy, fuelcast_xgboost, fuelcast_vqr."
+                            )))
+    if payload.model_id == "fuelcast_vqr":
+        features = payload.fuelcast_inputs.model_dump()
+        try:
+            predictor = get_predictor("fuelcast_vqr")
+        except ModelUnavailableError as exc:
+            logger.exception("FuelCast VQR model unavailable")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=MODEL_UNAVAILABLE_MESSAGE) from exc
+        try:
+            prediction = predictor.predict([features])
+        except FeatureValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        except ModelUnavailableError as exc:
+            logger.exception("FuelCast VQR prediction failed")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=PREDICTION_FAILED_MESSAGE) from exc
+        response = PredictionResponse(
+            model_id=prediction["model_id"],
+            model_run_id=prediction["run_id"],
+            attempt_id=prediction["attempt_id"],
+            execution_type="exact quantum simulator",
+            fuel_rate=prediction["fuel_rates"][0],
+            fuel_rate_unit=prediction["fuel_rate_unit"],
+            unit_verified=prediction["unit_verified"],
+            model_metadata=predictor.metadata(),
+            features_used=features,
+            note=("Exact simulator prediction from explicit FuelCast inputs; no quantum hardware was used. "
+                  "Wind-direction convention remains unverified. No voyage total, cost, or emissions is calculated."),
+        )
+        response.prediction_id = RunRepository(db, "prediction").save(
+            user_id=user["id"], request=payload.model_dump(), response=response.model_dump(),
+        )
+        return response
     if payload.model_id == "fuelcast_xgboost":
         features = payload.fuelcast_inputs.model_dump()
         try:

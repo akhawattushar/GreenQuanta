@@ -8,9 +8,6 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import pytest
-
-from app.services.model_registry import UnknownModelError, get_predictor
 
 RUN_ID = "fuelcast-phase1-20260928-002"
 ATTEMPT_ID = "5ef14aa8c84e4834ba9992eee821ab5a"
@@ -135,9 +132,7 @@ def test_validation_and_simulator_labels():
     assert manifest["environmental_snapshot_limitation"]
 
 
-def test_quick_is_excluded_and_vqr_is_not_registered():
+def test_quick_is_excluded_from_the_application_bundle():
     manifest = _json("inference_manifest.json")
     assert not (ROOT.parent.parent / "quick").exists()
     assert "smoke test" in manifest["quick_candidate_exclusion"]
-    with pytest.raises(UnknownModelError):
-        get_predictor("fuelcast_vqr")
