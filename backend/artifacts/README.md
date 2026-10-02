@@ -46,17 +46,27 @@ The manifest does not define the wind-direction reference convention. Confirm
 it with the export owner before mapping GreenQuanta's relative wind direction.
 
 The preexisting `classical/` pair (`model.json`, `preprocessor.pkl`) has no
-verified run manifest. The visible VQR quartet remains in `vqr/` pending
-version identification; the second VQR export is missing. Neither is wired
-into the backend.
+verified run manifest and is not wired into the backend.
+
+SIH contains both `quick` and `normal` VQR candidates for run
+`fuelcast-phase1-20260928-002`. The four files in the preexisting, untracked
+`vqr/` directory match the **normal** candidate by SHA-256. They remain in
+place. The normal application bundle is packaged separately at
+`fuelcast/vqr/fuelcast-phase1-20260928-002/normal/5ef14aa8c84e4834ba9992eee821ab5a/`.
+Its `inference_manifest.json` hashes seven files and records the six ordered
+inputs, units, simulator circuit, dependencies, and validation provenance.
+The included `candidate_manifest.json` also hashes training-only files that
+remain in SIH; its full artifact set is not present in this inference bundle.
+The quick candidate used 60 sampled training rows as a smoke test and was not
+copied into the application bundle. VQR is not registered or API-accessible.
 
 ## Contract gate for backend integration
 
-- For **each VQR version**, obtain a unique run ID and a manifest with hashes
-  for its four files, circuit construction and parameter-order source,
-  estimator and simulator package versions, importable input preprocessor and
-  target scaler definitions, ordered features with units, and labeled
-  validation and test reports. Validate each version independently.
+- Before VQR runtime integration, add compatible Qiskit and Qiskit Machine
+  Learning dependencies, verify Python 3.13 compatibility, implement and test
+  the adapter, confirm the wind-direction reference convention, and run API
+  tests. The normal bundle is a candidate, not a production-ready model.
+  Its reported metrics are from validation, not a held-out test.
 - For XGBoost, confirm the export owner's wind-direction convention and
   manifest convention if the bundle and candidate roles differ. The local
   synthetic-row inference and transformed order checks have passed.

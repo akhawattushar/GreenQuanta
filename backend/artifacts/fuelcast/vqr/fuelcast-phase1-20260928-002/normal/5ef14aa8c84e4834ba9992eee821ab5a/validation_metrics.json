@@ -1,0 +1,32 @@
+{
+  "selection_scope": "vqr_validation_only",
+  "mode": "normal",
+  "benchmark_eligible": true,
+  "validation_rows": 26096,
+  "validation_metrics": {
+    "mae": 0.2830684142645837,
+    "rmse": 0.3683189258325035,
+    "r2": 0.5553620947467861
+  },
+  "validation_per_vessel": {
+    "cps_poseidon": {
+      "rows": 15813,
+      "mae": 0.282857565505529,
+      "rmse": 0.3933358939858445,
+      "r2": 0.4832745801261642
+    },
+    "cps_triton": {
+      "rows": 3802,
+      "mae": 0.42618035865892784,
+      "rmse": 0.4477690905867591,
+      "r2": -46.90095781129896
+    },
+    "oss_ceto": {
+      "rows": 6481,
+      "mae": 0.19962797896750525,
+      "rmse": 0.22612301204157154,
+      "r2": -2.057487854826514
+    }
+  },
+  "prediction_seconds": 20.140774500003317
+}
