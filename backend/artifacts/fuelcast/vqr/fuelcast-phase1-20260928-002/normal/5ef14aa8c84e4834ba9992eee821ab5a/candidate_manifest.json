@@ -1,0 +1,110 @@
+{
+  "candidate": "vqr",
+  "model_family": "quantum",
+  "algorithm": "VQR",
+  "backend": "simulator",
+  "real_quantum_hardware": false,
+  "selection_scope": "vqr_validation_only",
+  "benchmark_eligible": true,
+  "dataset_id": "krohnedigital/FuelCast",
+  "dataset_version": "eb6a6ec011c1c9a2cbce21459e22be4c77ef84dd",
+  "canonical_sha256": "262428b4b2002435806f60aa9939755798dc9fe208b0c4b5d963a9200639cc65",
+  "run_id": "fuelcast-phase1-20260928-002",
+  "feature_order": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "feature_schema_sha256": "6492c06fc7f68c0484a080f372f2ff0bf8946c183e4136e87dabd68ae94904a7",
+  "split_manifest_sha256": "397f69783cfd452bb8aa4b338dfe43309c9768d7c998bc89cbfe74db5936b37b",
+  "phase4_artifact_sha256": {
+    "feature_schema.json": "6492c06fc7f68c0484a080f372f2ff0bf8946c183e4136e87dabd68ae94904a7",
+    "train.npz": "cc4f46d560fb05f5f45c452cd9bbe83d6056040b0c07980b616d5de66703cc8c",
+    "validation.npz": "62570f6ace29355b34339bca1d1f190d1439caa5b16a8b7819a8b1920d8dbac8",
+    "vqr_preprocessor.pkl": "4bbf1a3e36e8ddd1773a2b5a4c982c6cb0c5aac4373e8ac0154326d2cce73ed3",
+    "vqr_target_scaler.pkl": "578dc9c6577904825105a79717c78e8d621343a3441bd5672417319d706cb761"
+  },
+  "target": "fuel_consumption_kg_s",
+  "target_unit": "kg/s",
+  "mode": "normal",
+  "seed": 42,
+  "training_rows_full": 121780,
+  "training_rows_sampled": 600,
+  "validation_rows": 26096,
+  "partition_counts": {
+    "train": 121780,
+    "validation": 26096
+  },
+  "optimizer": "COBYLA",
+  "optimizer_maxiter": 80,
+  "fit_loss": "scaled_target_squared_error",
+  "fit_wall_seconds": 7200,
+  "validation_wall_seconds": 3600,
+  "optimizer_evaluations": 80,
+  "fit_seconds": 37.327374959000736,
+  "attempt_id": "5ef14aa8c84e4834ba9992eee821ab5a",
+  "resumed_from_attempt_id": null,
+  "initial_point": [
+    0.05479120971119267,
+    -0.012224312049589537,
+    0.0717195839822765,
+    0.039473605811872786,
+    -0.0811645304224701,
+    0.09512447032735119,
+    0.0522279403980706,
+    0.057212861055390765,
+    -0.07437727346489083,
+    -0.009922812420886573,
+    -0.025840395153483756,
+    0.08535299776972037
+  ],
+  "prediction_seconds": 20.140774500003317,
+  "validation_metrics": {
+    "mae": 0.2830684142645837,
+    "rmse": 0.3683189258325035,
+    "r2": 0.5553620947467861
+  },
+  "validation_per_vessel": {
+    "cps_poseidon": {
+      "rows": 15813,
+      "mae": 0.282857565505529,
+      "rmse": 0.3933358939858445,
+      "r2": 0.4832745801261642
+    },
+    "cps_triton": {
+      "rows": 3802,
+      "mae": 0.42618035865892784,
+      "rmse": 0.4477690905867591,
+      "r2": -46.90095781129896
+    },
+    "oss_ceto": {
+      "rows": 6481,
+      "mae": 0.19962797896750525,
+      "rmse": 0.22612301204157154,
+      "r2": -2.057487854826514
+    }
+  },
+  "dependency_versions": {
+    "qiskit": "2.5.2",
+    "qiskit-machine-learning": "0.9.1",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "joblib": "1.6.0"
+  },
+  "artifact_sha256": {
+    "circuit_config.json": "d7cd300f6ce69a30bd80ff1c680c66a9a6afb55ac0d5c163b4c5c38dbc29553f",
+    "weights.npz": "91ff7d1e749332a98a978887cda96c8d7803568fb1212fe4766831e270b3ce9c",
+    "vqr_preprocessor.pkl": "4bbf1a3e36e8ddd1773a2b5a4c982c6cb0c5aac4373e8ac0154326d2cce73ed3",
+    "vqr_target_scaler.pkl": "578dc9c6577904825105a79717c78e8d621343a3441bd5672417319d706cb761",
+    "feature_schema.json": "6492c06fc7f68c0484a080f372f2ff0bf8946c183e4136e87dabd68ae94904a7",
+    "sample_manifest.json": "fb0337324cfb1ca95516ad9d6c7f26aacf96a86e67bdaaed2b314b346f995dff",
+    "optimizer_history.json": "262f653efba41765eaa3a76a7533a0561326b79413d5748f240dd43254844bc1",
+    "attempt_manifest.json": "3870ff17d558ddc95b61baf54a602a9f0b3e22655299171521fc48da5214021c",
+    "validation_predictions.npz": "46c75f42cfb696ead7f32c16e91e2e617134adc883de5f723a59f420fb4daace",
+    "validation_metrics.json": "e3c75aeb5e8a2cc63e409eda366b3b4d5a0976b079fb5b5f379c6d0b46839ed6"
+  }
+}

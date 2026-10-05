@@ -1,0 +1,68 @@
+{
+  "champion_model": "xgboost",
+  "model_family": "classical",
+  "backend": "cpu",
+  "hardware": "classical",
+  "selection_metric": "validation_mae",
+  "refit": false,
+  "dataset_id": "krohnedigital/FuelCast",
+  "dataset_version": "eb6a6ec011c1c9a2cbce21459e22be4c77ef84dd",
+  "canonical_sha256": "262428b4b2002435806f60aa9939755798dc9fe208b0c4b5d963a9200639cc65",
+  "split_manifest_sha256": "397f69783cfd452bb8aa4b338dfe43309c9768d7c998bc89cbfe74db5936b37b",
+  "target": "fuel_consumption_kg_s",
+  "raw_features": [
+    "speed_over_ground",
+    "wind_speed",
+    "wind_direction",
+    "wave_height",
+    "wave_period",
+    "current_speed"
+  ],
+  "run_id": "fuelcast-phase1-20260928-002",
+  "candidate_manifest_sha256": "047fdd9784e6378b3deaf11a2650ede3cc7847e483de0a7f82df5589448671c7",
+  "dependency_versions": {
+    "python": "3.11.16",
+    "numpy": "2.4.6",
+    "pandas": "3.0.5",
+    "scikit_learn": "1.9.1",
+    "joblib": "1.6.0",
+    "xgboost": "3.2.0"
+  },
+  "artifact_sha256": {
+    "preprocessor.pkl": "6ad5c01f4d1a641e1b03e155e1160738f7b221c706b9daf01e1e8cc7aa0b0ce5",
+    "feature_schema.json": "6492c06fc7f68c0484a080f372f2ff0bf8946c183e4136e87dabd68ae94904a7",
+    "model/model.json": "2ae97fb20b6e416dd7730bebfa904f788680ccdc4fe82e90987e14576dde4b51",
+    "model/validation_predictions.npz": "068442e9521a8146743a8c4a65e3c7b075c98688ffcecb12b5adad9ec12877b8",
+    "model/search_results.json": "ca987eba0088b400cbe20008d049102add7157edbc41356a4735bb1adce01a5b",
+    "model/candidate_manifest.json": "047fdd9784e6378b3deaf11a2650ede3cc7847e483de0a7f82df5589448671c7",
+    "leaderboard.json": "7faf2c2360cbaabaa229aa29e7dd4d98b456ac1b93c317a1a0c50c5a65645001",
+    "metrics.json": "87a80a75ae421f44cf6921610b20dcd9054651b2b04ba5aeeada3cc780d31851"
+  },
+  "test_metrics": {
+    "mae": 0.12854118081363877,
+    "rmse": 0.1841633970560541,
+    "r2": 0.8921833518766525
+  },
+  "test_per_vessel": {
+    "cps_poseidon": {
+      "rows": 15814,
+      "mae": 0.11105636056362754,
+      "rmse": 0.17116512004687195,
+      "r2": 0.8824814178141067
+    },
+    "cps_triton": {
+      "rows": 3803,
+      "mae": 0.24624725780310447,
+      "rmse": 0.2909813820939719,
+      "r2": -24.218815593804504
+    },
+    "oss_ceto": {
+      "rows": 6481,
+      "mae": 0.10213611009040768,
+      "rmse": 0.12411239292607679,
+      "r2": -0.22959897489515368
+    }
+  },
+  "test_prediction_seconds": 0.025926916998287197,
+  "evaluation_manifest_sha256": "3266c780b4e40314874abeba31020b4d20b448330435bb4315cb51cbc354a52f"
+}

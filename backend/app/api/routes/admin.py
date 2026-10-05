@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import AdminUser, DbDep
@@ -11,6 +13,7 @@ from app.schemas.models import RoleUpdateRequest
 from app.services import model_registry, reporting
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/users", summary="List all accounts")
@@ -40,8 +43,12 @@ def model(_: AdminUser) -> dict:
     if info["loaded"]:
         try:
             metrics = model_registry.evaluate_holdout()
-        except model_registry.ModelUnavailableError as exc:
-            metrics = {"available": False, "reason": str(exc)}
+        except model_registry.ModelUnavailableError:
+            logger.exception("Admin model holdout evaluation failed")
+            metrics = {"available": False, "reason": model_registry.MODEL_UNAVAILABLE_MESSAGE}
+        except Exception:
+            logger.exception("Admin model holdout evaluation failed")
+            metrics = {"available": False, "reason": "Model evaluation could not be completed."}
     return {"registry": info, "metrics": metrics}
 
 
@@ -50,7 +57,9 @@ def reload_model(_: AdminUser) -> dict:
     try:
         bundle = model_registry.get_bundle(force_reload=True)
     except model_registry.ModelUnavailableError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        logger.exception("Admin model reload failed")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=model_registry.MODEL_UNAVAILABLE_MESSAGE) from exc
     return {"reloaded": True, "metadata": bundle.metadata()}
 
 

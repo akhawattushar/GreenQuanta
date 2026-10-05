@@ -10,12 +10,17 @@ contract does not change.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
+import math
 
+from app.core.config import get_settings
 from app.db.database import Database, VoyageRepository, new_id
-from app.services.evaluator import Environment, VesselState, VoyagePlan, evaluate
-from app.services.model_registry import ModelUnavailableError
+from app.services.evaluator import CO2E_TONNES_PER_TONNE_FUEL, Environment, VesselState, VoyagePlan, evaluate, EvaluationError
+from app.services.model_registry import MODEL_UNAVAILABLE_MESSAGE, ModelUnavailableError, get_predictor
+from app.services.optimization import KNOT_IN_M_S
 
 DATA_SOURCE = "user_entered"
+logger = logging.getLogger(__name__)
 
 #: Nominal sea state used to score voyages that have no observation attached.
 NOMINAL_ENVIRONMENT = Environment(
@@ -27,6 +32,58 @@ NOMINAL_ENVIRONMENT = Environment(
     sea_current_direction_relative=90.1,
     sea_water_temperature=17.0,
 )
+
+
+class VoyageCalculationError(ValueError):
+    """Invalid voyage duration, rate, or converted fuel total."""
+
+
+def _fuelcast_result(payload: dict) -> dict:
+    """Score one explicit environmental snapshot over the planned voyage."""
+    if (not math.isfinite(payload["distance_nm"]) or not math.isfinite(payload["speed_knots"])
+            or payload["distance_nm"] <= 0 or payload["speed_knots"] <= 0):
+        raise VoyageCalculationError("Voyage duration must be finite and positive.")
+    # Both speeds are caller supplied. Check agreement without filling either input.
+    speed_over_ground = payload["fuelcast_inputs"]["speed_over_ground"]
+    if not math.isclose(payload["speed_knots"] * KNOT_IN_M_S, speed_over_ground,
+                        rel_tol=0.02, abs_tol=0.10):
+        raise VoyageCalculationError(
+            "speed_knots and fuelcast_inputs.speed_over_ground must describe the same voyage speed "
+            "(within 2% or 0.10 m/s)."
+        )
+    duration = payload["distance_nm"] / payload["speed_knots"]
+    if not math.isfinite(duration) or duration <= 0:
+        raise VoyageCalculationError("Voyage duration must be finite and positive.")
+
+    predictor = get_predictor("fuelcast_xgboost")
+    result = predictor.predict([payload["fuelcast_inputs"]])
+    if result.get("fuel_rate_unit") != "kg/s" or len(result.get("fuel_rates", [])) != 1:
+        raise ModelUnavailableError("FuelCast prediction did not return one kg/s rate.")
+    rate = result["fuel_rates"][0]
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate):
+        raise ModelUnavailableError("FuelCast prediction must be a finite numeric rate.")
+    fuel_tonnes = rate * duration * 3.6
+    if not math.isfinite(fuel_tonnes) or fuel_tonnes < 0:
+        raise VoyageCalculationError("Calculated voyage fuel must be finite and non-negative.")
+
+    settings = get_settings()
+    cost_usd = fuel_tonnes * settings.fuel_price_usd_per_tonne
+    cost_inr = cost_usd * settings.usd_to_inr
+    ghg = fuel_tonnes * CO2E_TONNES_PER_TONNE_FUEL["Marine Diesel"]
+    if not all(math.isfinite(value) for value in (cost_usd, cost_inr, ghg)):
+        raise VoyageCalculationError("Calculated voyage cost and emissions must be finite.")
+    return {
+        "model_id": "fuelcast_xgboost",
+        "model_run_id": result.get("run_id") or predictor.metadata().get("run_id"),
+        "raw_prediction": rate,
+        "raw_prediction_unit": "kg/s",
+        "normalized_voyage_fuel_tonnes": fuel_tonnes,
+        "normalized_voyage_fuel_unit": "tonnes",
+        "conversion_duration_hours": duration,
+        "cost_usd": round(cost_usd, 2),
+        "cost_inr": round(cost_inr, 2),
+        "ghg_tonnes_co2e": round(ghg, 4),
+    }
 
 
 def create_voyage(db: Database, *, user_id: str, user_name: str, payload: dict) -> dict:
@@ -46,6 +103,9 @@ def create_voyage(db: Database, *, user_id: str, user_name: str, payload: dict) 
         "departed_at": payload.get("departed_at") or now.isoformat(timespec="seconds"),
         "data_source": DATA_SOURCE,
     }
+    if payload.get("model_id", "legacy") == "fuelcast_xgboost":
+        record.update(_fuelcast_result(payload))
+        record["fuelcast_inputs"] = dict(payload["fuelcast_inputs"])
     VoyageRepository(db).create(record)
     return describe(record)
 
@@ -104,8 +164,36 @@ def describe(voyage: dict, *, now: datetime | None = None) -> dict:
         "live_telemetry": False,
     }
 
-    # Fuel burn is computed by the trained model for this vessel and speed,
-    # not stored as a fixed number.
+    if voyage.get("model_id") == "fuelcast_xgboost":
+        fuel_tonnes = voyage["normalized_voyage_fuel_tonnes"]
+        consumed = fuel_tonnes * progress
+        payload.update({
+            "fuel_model_available": True,
+            "model_id": "fuelcast_xgboost",
+            "model_run_id": voyage.get("model_run_id"),
+            "fuelcast_inputs": voyage.get("fuelcast_inputs"),
+            "modelled_fuel_rate": voyage["raw_prediction"],
+            "fuel_rate_unit": voyage["raw_prediction_unit"],
+            "raw_prediction": voyage["raw_prediction"],
+            "raw_prediction_unit": voyage["raw_prediction_unit"],
+            "normalized_voyage_fuel_tonnes": fuel_tonnes,
+            "normalized_voyage_fuel_unit": voyage["normalized_voyage_fuel_unit"],
+            "conversion_duration_hours": voyage["conversion_duration_hours"],
+            "planned_fuel_tonnes": fuel_tonnes,
+            "fuel_consumed_tonnes": round(consumed, 2),
+            "fuel_remaining_tonnes": round(voyage["fuel_loaded_tonnes"] - consumed, 2),
+            "cost_usd": voyage["cost_usd"],
+            "cost_inr": voyage["cost_inr"],
+            "ghg_tonnes_co2e": voyage["ghg_tonnes_co2e"],
+            "fuel_note": (
+                "One explicitly supplied FuelCast environmental snapshot represents the entire voyage; "
+                "consumption is estimated from elapsed progress, not measured. "
+                "Cost and emissions assume Marine Diesel."
+            ),
+        })
+        return payload
+
+    # Legacy fuel burn is computed by the trained model for this vessel and speed.
     try:
         plan = VoyagePlan(
             distance_nm=voyage["distance_nm"],
@@ -133,11 +221,13 @@ def describe(voyage: dict, *, now: datetime | None = None) -> dict:
                 ),
             }
         )
-    except ModelUnavailableError as exc:
+    except (ModelUnavailableError, EvaluationError) as exc:
+        logger.exception("Legacy voyage model evaluation failed")
+        error_msg = str(exc) if isinstance(exc, EvaluationError) else MODEL_UNAVAILABLE_MESSAGE
         payload.update(
             {
                 "fuel_model_available": False,
-                "fuel_error": str(exc),
+                "fuel_error": error_msg,
                 "fuel_consumed_tonnes": None,
                 "fuel_remaining_tonnes": None,
             }

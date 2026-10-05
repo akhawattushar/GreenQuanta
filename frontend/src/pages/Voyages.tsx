@@ -4,7 +4,7 @@ import { AppShell } from "../components/layout/AppShell";
 import { Card, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Input } from "../components/ui/Input";
+import { Input, Select } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
 import { AssumptionNotice, ServiceErrorNotice, SimulatedBadge } from "../components/ui/Notices";
 import { EmptyState, LoadingState } from "../components/ui/States";
@@ -29,6 +29,8 @@ const EMPTY_FORM: VoyageCreate = {
 };
 
 function NewVoyageModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+  const model = useApi(() => api.modelInfo(), []);
+  const vesselTypes = model.data?.metadata?.categorical_categories?.vessel_type ?? [];
   const [form, setForm] = useState<VoyageCreate>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,19 @@ function NewVoyageModal({ open, onClose, onCreated }: { open: boolean; onClose: 
       <div className="space-y-3">
         {error && <ServiceErrorNotice message={error} />}
         <Input label="Vessel name" value={form.vessel} onChange={(e) => set("vessel", e.target.value)} placeholder="e.g. MV Ganga Pride" />
-        <Input label="Vessel type" value={form.vessel_type} onChange={(e) => set("vessel_type", e.target.value)} placeholder="e.g. Tanker Ship" />
+        <Select
+          label="Vessel type"
+          value={form.vessel_type}
+          disabled={vesselTypes.length === 0}
+          onChange={(e) => set("vessel_type", e.target.value)}
+        >
+          <option value="">{vesselTypes.length ? "Select…" : "Loading from model…"}</option>
+          {vesselTypes.map((t: string) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </Select>
         <div className="grid grid-cols-2 gap-3">
           <Input label="Origin" value={form.origin} onChange={(e) => set("origin", e.target.value)} placeholder="e.g. Mumbai" />
           <Input label="Destination" value={form.destination} onChange={(e) => set("destination", e.target.value)} placeholder="e.g. Singapore" />

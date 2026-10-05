@@ -1,0 +1,61 @@
+{
+  "algorithm": "VQR",
+  "num_qubits": 6,
+  "feature_map": {
+    "class": "QuantumCircuit",
+    "encoding": "RY",
+    "repetitions": 1,
+    "input_parameters": 6,
+    "qubit_feature_order": [
+      "speed_over_ground",
+      "wind_speed",
+      "wind_direction",
+      "wave_height",
+      "wave_period",
+      "current_speed"
+    ],
+    "angle_ranges": [
+      [
+        0,
+        "pi"
+      ],
+      [
+        0,
+        "pi"
+      ],
+      [
+        0,
+        "2pi"
+      ],
+      [
+        0,
+        "pi"
+      ],
+      [
+        0,
+        "pi"
+      ],
+      [
+        0,
+        "pi"
+      ]
+    ]
+  },
+  "ansatz": {
+    "factory": "real_amplitudes",
+    "repetitions": 1,
+    "entanglement": "linear",
+    "gate": "CX",
+    "weights": 12,
+    "skip_final_rotation_layer": false
+  },
+  "observable": {
+    "name": "mean_single_qubit_Z",
+    "terms": 6,
+    "coefficient": 0.16666666666666666
+  },
+  "estimator": "QMLEstimator",
+  "default_precision": 0.0,
+  "backend": "simulator",
+  "real_quantum_hardware": false
+}
