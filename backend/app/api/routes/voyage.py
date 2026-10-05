@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.deps import CurrentUser, DbDep, WriteUser
 from app.db.database import AuditRepository
 from app.schemas.models import FleetSummaryResponse, VoyageCreateRequest, VoyageListResponse
-from app.services.voyage import DATA_SOURCE, create_voyage, delete_voyage, fleet_summary, get_voyage, list_voyages
+from app.services.model_registry import MODEL_UNAVAILABLE_MESSAGE, FeatureValidationError, ModelUnavailableError
+from app.services.voyage import (
+    DATA_SOURCE, VoyageCalculationError, create_voyage, delete_voyage, fleet_summary, get_voyage, list_voyages,
+)
 
 router = APIRouter(prefix="/voyage", tags=["voyage"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/active", response_model=VoyageListResponse, summary="Voyages in progress")
@@ -27,7 +33,16 @@ def summary(user: CurrentUser, db: DbDep) -> FleetSummaryResponse:
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Record a new voyage")
 def create(payload: VoyageCreateRequest, user: WriteUser, db: DbDep) -> dict:
-    voyage = create_voyage(db, user_id=user["id"], user_name=user["name"], payload=payload.model_dump())
+    try:
+        voyage = create_voyage(db, user_id=user["id"], user_name=user["name"], payload=payload.model_dump())
+    except (FeatureValidationError, VoyageCalculationError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except ModelUnavailableError as exc:
+        logger.exception("Voyage prediction model unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=MODEL_UNAVAILABLE_MESSAGE,
+        ) from exc
     AuditRepository(db).log(user_id=user["id"], action="voyage.create", detail=voyage["id"])
     return voyage
 

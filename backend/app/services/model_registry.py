@@ -1,8 +1,8 @@
 """Loads the real training artifacts and runs inference through them.
 
 Nothing here invents a prediction. If any artifact is missing or the loaded
-preprocessor/model pair is inconsistent, `ModelUnavailableError` is raised and
-the API turns it into an explicit 503 with the reason attached.
+preprocessor/model pair is inconsistent, `ModelUnavailableError` is raised.
+API boundaries return a stable public error and log the internal reason.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ from typing import Any, Sequence
 from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+MODEL_UNAVAILABLE_MESSAGE = "Selected prediction model is unavailable."
+PREDICTION_FAILED_MESSAGE = "Prediction could not be completed."
+MODEL_HEALTH_FAILED_MESSAGE = "Model health check failed."
 
 
 class ModelUnavailableError(RuntimeError):
@@ -26,6 +29,10 @@ class ModelUnavailableError(RuntimeError):
 
 class FeatureValidationError(ValueError):
     """Raised when inference input does not match the training schema."""
+
+
+class UnknownModelError(ValueError):
+    """Raised for a model ID that the registry does not recognize."""
 
 
 @dataclass
@@ -60,7 +67,7 @@ class ModelBundle:
             "categorical_categories": {k: list(v) for k, v in self.categorical_categories.items()},
             "transformed_feature_names": list(self.transformed_feature_names),
             "transformed_feature_count": self.n_transformed_features,
-            "artifact_paths": dict(self.artifact_paths),
+            "artifact_paths": {name: Path(path).name for name, path in self.artifact_paths.items()},
             "warnings": list(self.warnings),
         }
 
@@ -68,6 +75,12 @@ class ModelBundle:
 _bundle: ModelBundle | None = None
 _load_error: str | None = None
 _lock = threading.Lock()
+_fuelcast_bundle: Any | None = None
+_fuelcast_error: str | None = None
+_fuelcast_lock = threading.Lock()
+_vqr_bundle: Any | None = None
+_vqr_error: str | None = None
+_vqr_lock = threading.Lock()
 
 
 def _require(path: Path, label: str) -> None:
@@ -229,12 +242,101 @@ def get_bundle(*, force_reload: bool = False) -> ModelBundle:
         return _bundle
 
 
+def get_predictor(model_id: str = "legacy", *, force_reload: bool = False):
+    """Select an independent predictor without changing the legacy default."""
+    if model_id == "legacy":
+        return get_bundle(force_reload=force_reload)
+    if model_id == "fuelcast_xgboost":
+        from app.services.fuelcast_xgboost import load_fuelcast_xgboost
+
+        global _fuelcast_bundle, _fuelcast_error
+        with _fuelcast_lock:
+            if force_reload:
+                _fuelcast_bundle, _fuelcast_error = None, None
+            if _fuelcast_bundle is not None:
+                return _fuelcast_bundle
+            if _fuelcast_error is not None:
+                raise ModelUnavailableError(_fuelcast_error)
+            try:
+                _fuelcast_bundle = load_fuelcast_xgboost(get_settings())
+            except ModelUnavailableError as exc:
+                _fuelcast_error = str(exc)
+                raise
+            return _fuelcast_bundle
+    if model_id == "fuelcast_vqr":
+        from app.services.fuelcast_vqr import load_fuelcast_vqr
+
+        global _vqr_bundle, _vqr_error
+        with _vqr_lock:
+            if force_reload:
+                _vqr_bundle, _vqr_error = None, None
+            if _vqr_bundle is not None:
+                return _vqr_bundle
+            if _vqr_error is not None:
+                raise ModelUnavailableError(_vqr_error)
+            try:
+                selected = load_fuelcast_vqr(get_settings())
+            except ModelUnavailableError as exc:
+                _vqr_error = str(exc)
+                raise
+            _vqr_bundle = selected
+            return selected
+    raise UnknownModelError(
+        f"Unknown model ID {model_id!r}. Available IDs: legacy, fuelcast_xgboost, fuelcast_vqr."
+    )
+
+
+def fuelcast_status() -> dict:
+    """Report model readiness for explicitly supplied FuelCast raw inputs."""
+    required_api_inputs = [
+        "speed_over_ground (m/s)", "wind_direction (FuelCast degrees)",
+        "wind_speed (m/s)", "wave_height (m)", "wave_period (s)", "current_speed (m/s)",
+    ]
+    try:
+        predictor = get_predictor("fuelcast_xgboost")
+    except ModelUnavailableError:
+        logger.exception("FuelCast model status check failed")
+        return {"model_id": "fuelcast_xgboost", "run_id": "fuelcast-phase1-20260928-002",
+                "loaded": False, "error": MODEL_HEALTH_FAILED_MESSAGE, "api_available": False,
+                "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
+                "wind_direction_convention_verified": False, "target_unit": "kg/s"}
+    return {"loaded": True, "error": None, "api_available": True,
+            "input_contract": "explicit_fuelcast_inputs", "required_api_inputs": required_api_inputs,
+            "wind_direction_convention_verified": False, **predictor.metadata()}
+
+
+def vqr_status() -> dict:
+    """Independent readiness summary; a VQR failure does not affect legacy."""
+    base = {
+        "model_id": "fuelcast_vqr",
+        "display_name": "FuelCast Variational Quantum Regressor",
+        "model_family": "variational_quantum_regressor",
+        "run_id": "fuelcast-phase1-20260928-002",
+        "mode": "normal",
+        "attempt_id": "5ef14aa8c84e4834ba9992eee821ab5a",
+        "target_unit": "kg/s",
+        "execution_type": "exact quantum simulator",
+        "hardware_execution": False,
+        "input_contract": "explicit_fuelcast_inputs",
+        "wind_direction_convention_verified": False,
+    }
+    try:
+        predictor = get_predictor("fuelcast_vqr")
+    except ModelUnavailableError:
+        logger.exception("FuelCast VQR model status check failed")
+        return {**base, "loaded": False, "api_available": False,
+                "error": MODEL_HEALTH_FAILED_MESSAGE}
+    return {**base, **predictor.metadata(), "loaded": True, "api_available": True,
+            "error": None}
+
+
 def status() -> dict:
     """Non-raising health summary for /health and /admin."""
     try:
         bundle = get_bundle()
-    except ModelUnavailableError as exc:
-        return {"loaded": False, "error": str(exc)}
+    except ModelUnavailableError:
+        logger.exception("Legacy model status check failed")
+        return {"loaded": False, "error": MODEL_HEALTH_FAILED_MESSAGE}
     return {"loaded": True, "error": None, **bundle.metadata()}
 
 
@@ -358,20 +460,27 @@ def evaluate_holdout() -> dict:
     settings = get_settings()
     path = settings.resolved_test_set_path
     if not path.is_file():
-        return {"available": False, "reason": f"Test split not found at {path}."}
+        logger.warning("Model evaluation test split not found: %s", path)
+        return {"available": False, "reason": "Model evaluation data is unavailable."}
     try:
         import numpy as np  # noqa: PLC0415
         from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover
-        return {"available": False, "reason": f"Missing dependency: {exc}"}
+    except ImportError:  # pragma: no cover
+        logger.exception("Model evaluation dependency unavailable")
+        return {"available": False, "reason": "Model evaluation is unavailable."}
 
     bundle = get_bundle()
-    with np.load(path, allow_pickle=False) as data:
-        if "features" not in data or "target" not in data:
-            return {"available": False, "reason": f"Unexpected npz keys: {list(data.files)}"}
-        features = data["features"]
-        target = data["target"]
-    predicted = bundle.model.predict(features)
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if "features" not in data or "target" not in data:
+                logger.warning("Model evaluation test split has unexpected keys: %s", list(data.files))
+                return {"available": False, "reason": "Model evaluation data is invalid."}
+            features = data["features"]
+            target = data["target"]
+        predicted = bundle.model.predict(features)
+    except Exception:
+        logger.exception("Model evaluation failed")
+        return {"available": False, "reason": "Model evaluation could not be completed."}
 
     result = {
         "available": True,
